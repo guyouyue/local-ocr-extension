@@ -28,7 +28,9 @@ async function recognizeImages(images, lang) {
     console.log('[Offscreen] recognizing image', i + 1, '/', images.length);
     const { data: { text } } = await worker.recognize(images[i]);
     console.log('[Offscreen] image', i + 1, 'recognized text length:', text?.length);
-    if (text.trim()) allText += `\n--- 分段 ${i + 1} ---\n${text.trim()}`;
+    if (text.trim()) {
+      allText += (allText ? '\n' : '') + text.trim();
+    }
   }
   await worker.terminate();
   console.log('[Offscreen] recognizeImages done, total length:', allText.length);

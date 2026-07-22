@@ -384,10 +384,41 @@ async function runAreaOcr(area, onProgress) {
   }
 }
 
+async function runContainerOcr(container, onProgress) {
+  console.log('[OCREngine] runContainerOcr called, container:', container);
+  if (state.isCapturing) {
+    console.warn('[OCREngine] already capturing, skip');
+    return;
+  }
+  state.isCapturing = true;
+  try {
+    // 容器识别使用与区域识别相同的逻辑，但使用容器的完整高度
+    const captureArea = {
+      x: container.x,
+      y: container.y,
+      width: container.width,
+      height: container.scrollHeight || container.height
+    };
+    console.log('[OCREngine] container capture area:', captureArea);
+    const { pieces, settings } = await captureSequence(captureArea, onProgress);
+    const text = await recognize(pieces, settings.lang);
+    await saveToHistory(text, 'container');
+    await showResultInContentScript(text, null, 'container');
+    return text;
+  } catch (err) {
+    console.error('[OCREngine] runContainerOcr error:', err);
+    await showResultInContentScript(null, err.message);
+    throw err;
+  } finally {
+    state.isCapturing = false;
+  }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[Background] extension installed');
   chrome.contextMenus.create({ id: 'kst-ocr-full', title: '识别整页', contexts: ['page'] });
   chrome.contextMenus.create({ id: 'kst-ocr-area', title: '框选识别', contexts: ['page'] });
+  chrome.contextMenus.create({ id: 'kst-ocr-container', title: '容器识别', contexts: ['page'] });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -400,6 +431,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     }
   } else if (info.menuItemId === 'kst-ocr-area') {
     await chrome.tabs.sendMessage(tab.id, { action: 'startAreaSelection' });
+  } else if (info.menuItemId === 'kst-ocr-container') {
+    await chrome.tabs.sendMessage(tab.id, { action: 'startContainerSelection' });
   }
 });
 
@@ -433,6 +466,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       })
       .catch((err) => {
         console.error('[Background] startAreaOcr error:', err);
+        sendResponse({ error: err.message });
+      });
+    return true;
+  }
+
+  if (request.action === 'startContainerOcr') {
+    runContainerOcr(request.container)
+      .then((text) => {
+        console.log('[Background] startContainerOcr success, text length:', text?.length);
+        sendResponse({ text });
+      })
+      .catch((err) => {
+        console.error('[Background] startContainerOcr error:', err);
         sendResponse({ error: err.message });
       });
     return true;

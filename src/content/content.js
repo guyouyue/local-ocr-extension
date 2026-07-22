@@ -227,6 +227,7 @@ function toggleFloatMenu() {
   const menuItems = [
     { label: '识别整页', icon: '📄', action: () => handleFullPageOcr() },
     { label: '框选识别', icon: '🔲', action: () => handleAreaOcr() },
+    { label: '容器识别', icon: '🎯', action: () => handleContainerOcr() },
     { label: '历史记录', icon: '🕒', action: () => showHistoryPanel() },
     { label: '设置', icon: '⚙️', action: () => chrome.runtime.sendMessage({ action: 'openOptions' }) }
   ];
@@ -496,7 +497,8 @@ async function showHistoryPanel(highlightId = null) {
     const history = res.history || [];
     if (!history.length) return alert('没有历史记录可导出');
     const text = history.map(item => {
-      return `[${item.date}] ${item.type === 'full' ? '整页识别' : '框选识别'} (${item.id})\n${item.text}\n${'='.repeat(50)}`;
+      const typeLabel = item.type === 'full' ? '整页识别' : item.type === 'container' ? '容器识别' : '框选识别';
+      return `[${item.date}] ${typeLabel} (${item.id})\n${item.text}\n${'='.repeat(50)}`;
     }).join('\n\n');
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -543,7 +545,8 @@ async function showHistoryPanel(highlightId = null) {
 
       const title = document.createElement('span');
       title.style.cssText = 'font-weight: 500; color: #1a73e8; font-size: 13px;';
-      title.textContent = `#${index + 1} ${item.type === 'full' ? '整页识别' : '框选识别'}`;
+      const typeLabel = item.type === 'full' ? '整页识别' : item.type === 'container' ? '容器识别' : '框选识别';
+      title.textContent = `#${index + 1} ${typeLabel}`;
 
       const time = document.createElement('span');
       time.style.cssText = 'font-size: 12px; color: #999;';
@@ -642,6 +645,218 @@ async function handleFullPageOcr() {
 async function handleAreaOcr() {
   console.log('[Content] handleAreaOcr');
   startAreaSelection();
+}
+
+async function handleContainerOcr() {
+  console.log('[Content] handleContainerOcr');
+  startContainerSelection();
+}
+
+function startContainerSelection() {
+  console.log('[Content] startContainerSelection called');
+  const overlayId = 'kst-ocr-container-overlay';
+  if (document.getElementById(overlayId)) {
+    console.log('[Content] container overlay already exists');
+    return;
+  }
+
+  const overlay = document.createElement('div');
+  overlay.id = overlayId;
+  overlay.style.cssText = `
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    z-index: 2147483647;
+    pointer-events: none;
+  `;
+
+  const highlight = document.createElement('div');
+  highlight.style.cssText = `
+    position: absolute;
+    border: 2px solid #1a73e8;
+    background: rgba(26, 115, 232, 0.1);
+    pointer-events: none;
+    display: none;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.3);
+  `;
+
+  const tooltip = document.createElement('div');
+  tooltip.style.cssText = `
+    position: absolute;
+    background: #1a73e8;
+    color: white;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: monospace;
+    pointer-events: none;
+    display: none;
+    white-space: nowrap;
+    z-index: 1;
+  `;
+
+  const exitHint = document.createElement('div');
+  exitHint.style.cssText = `
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    z-index: 2147483648;
+    pointer-events: none;
+  `;
+  exitHint.textContent = '🎯 移动鼠标选择容器，点击确认 | 按 ESC 退出';
+
+  overlay.appendChild(highlight);
+  overlay.appendChild(tooltip);
+  document.body.appendChild(overlay);
+  document.body.appendChild(exitHint);
+
+  let currentElement = null;
+
+  function getElementInfo(element) {
+    const tag = element.tagName.toLowerCase();
+    const id = element.id ? `#${element.id}` : '';
+    const classes = element.className && typeof element.className === 'string'
+      ? `.${element.className.split(' ').filter(c => c).join('.')}`
+      : '';
+    const rect = element.getBoundingClientRect();
+    return {
+      selector: `${tag}${id}${classes}`,
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    };
+  }
+
+  function onMouseMove(e) {
+    // 临时禁用 overlay 的 pointer-events 来获取下层元素
+    overlay.style.pointerEvents = 'none';
+    const element = document.elementFromPoint(e.clientX, e.clientY);
+    overlay.style.pointerEvents = 'auto';
+
+    if (!element || element === document.body || element === document.documentElement) {
+      highlight.style.display = 'none';
+      tooltip.style.display = 'none';
+      return;
+    }
+
+    // 忽略悬浮球相关元素
+    if (element.id && element.id.startsWith('kst-ocr-')) {
+      highlight.style.display = 'none';
+      tooltip.style.display = 'none';
+      return;
+    }
+
+    if (element.closest('#kst-ocr-float-ball') || element.closest('#kst-ocr-float-menu')) {
+      highlight.style.display = 'none';
+      tooltip.style.display = 'none';
+      return;
+    }
+
+    currentElement = element;
+    const rect = element.getBoundingClientRect();
+    const info = getElementInfo(element);
+
+    highlight.style.left = `${rect.left}px`;
+    highlight.style.top = `${rect.top}px`;
+    highlight.style.width = `${rect.width}px`;
+    highlight.style.height = `${rect.height}px`;
+    highlight.style.display = 'block';
+
+    tooltip.textContent = `${info.selector} (${info.width}×${info.height})`;
+    tooltip.style.left = `${rect.left}px`;
+    tooltip.style.top = `${Math.max(0, rect.top - 30)}px`;
+    tooltip.style.display = 'block';
+  }
+
+  async function onClick(e) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (!currentElement) {
+      console.log('[Content] no element selected');
+      return;
+    }
+
+    console.log('[Content] element clicked, processing...');
+    cleanup();
+
+    const rect = currentElement.getBoundingClientRect();
+    const scrollX = window.scrollX || window.pageXOffset;
+    const scrollY = window.scrollY || window.pageYOffset;
+
+    // 计算容器在整个文档中的绝对位置
+    const containerX = rect.left + scrollX;
+    const containerY = rect.top + scrollY;
+    const containerWidth = rect.width;
+    const containerHeight = rect.height;
+
+    // 检查容器是否有滚动内容
+    const scrollHeight = currentElement.scrollHeight;
+    const clientHeight = currentElement.clientHeight;
+    const hasScroll = scrollHeight > clientHeight;
+
+    console.log('[Content] container selected:', {
+      element: currentElement.tagName,
+      x: containerX,
+      y: containerY,
+      width: containerWidth,
+      height: containerHeight,
+      scrollHeight,
+      clientHeight,
+      hasScroll
+    });
+
+    try {
+      showStatus('正在识别容器内容…');
+      const res = await chrome.runtime.sendMessage({
+        action: 'startContainerOcr',
+        container: {
+          x: containerX,
+          y: containerY,
+          width: containerWidth,
+          height: containerHeight,
+          scrollHeight: hasScroll ? scrollHeight : containerHeight,
+          element: currentElement.tagName
+        }
+      });
+      console.log('[Content] startContainerOcr response:', res);
+    } catch (err) {
+      console.error('[Content] startContainerOcr failed:', err);
+      hideStatus();
+      showResultInPanel(`错误：${err.message}`, '识别失败');
+    }
+  }
+
+  function onKeyDown(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      console.log('[Content] ESC pressed, canceling selection');
+      cleanup();
+    }
+  }
+
+  function cleanup() {
+    console.log('[Content] cleaning up container selection');
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('click', onClick, true);
+    document.removeEventListener('keydown', onKeyDown);
+    if (overlay.parentNode) overlay.remove();
+    if (exitHint.parentNode) exitHint.remove();
+  }
+
+  // 启用 overlay 的 pointer-events 来捕获事件
+  overlay.style.pointerEvents = 'auto';
+
+  document.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('click', onClick, true);
+  document.addEventListener('keydown', onKeyDown);
+
+  console.log('[Content] container selection listeners attached');
 }
 
 function getPageMetrics(captureArea = null) {
@@ -849,6 +1064,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ ok: true });
     } catch (err) {
       console.error('[Content] startAreaSelection error:', err);
+      sendResponse({ error: errorToString(err) });
+    }
+    return true;
+  }
+  if (request.action === 'startContainerSelection') {
+    try {
+      startContainerSelection();
+      sendResponse({ ok: true });
+    } catch (err) {
+      console.error('[Content] startContainerSelection error:', err);
       sendResponse({ error: errorToString(err) });
     }
     return true;

@@ -132,7 +132,7 @@ async function setupOffscreenDocument() {
     }
     console.log('[Background] creating offscreen document');
     await chrome.offscreen.createDocument({
-      url: 'offscreen.html',
+      url: 'src/offscreen/offscreen.html',
       reasons: ['WORKERS'],
       justification: 'Run Tesseract.js OCR worker in background'
     });

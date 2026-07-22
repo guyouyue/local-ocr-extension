@@ -20,7 +20,7 @@
   },
   "action": {
     "default_title": "Local OCR",
-    "default_popup": "popup.html",
+    "default_popup": "src/pages/popup/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -28,21 +28,21 @@
     }
   },
   "background": {
-    "service_worker": "background.js",
+    "service_worker": "src/background/background.js",
     "type": "module"
   },
-  "options_page": "options.html",
+  "options_page": "src/pages/options/options.html",
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": ["src/content/content.js"],
       "run_at": "document_idle",
       "all_frames": false
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["assets/*", "libs/*", "libs/tesseract/*", "libs/tessdata/*", "config/default.json", "offscreen.html", "offscreen.js", "ocr.html", "ocr.js"],
+      "resources": ["assets/*", "libs/*", "libs/tesseract/*", "libs/tessdata/*", "config/default.json", "src/offscreen/offscreen.html", "src/offscreen/offscreen.js", "src/pages/ocr/ocr.html", "src/pages/ocr/ocr.js"],
       "matches": ["<all_urls>"]
     }
   ],

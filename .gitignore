@@ -1,1 +1,6 @@
 /CLAUDE.md
+
+# 本地配置数据（由插件运行时生成）
+/config/*.json
+!/config/default.json
+!/config/README.md

@@ -1,56 +1,152 @@
 console.log('[Background] background.js start');
 
 const state = { isCapturing: false };
-let ocrWindowTabId = null;
-let ocrWindowCreating = false;
-let ocrReadyResolve = null;
-let ocrReadyPromise = null;
 
-function waitOcrReady() {
-  if (!ocrReadyPromise) {
-    ocrReadyPromise = new Promise((resolve) => { ocrReadyResolve = resolve; });
+const DEFAULT_CONFIG = {
+  lang: 'chi_sim',
+  delay: 300,
+  historyLimit: 50
+};
+
+const CONFIG_KEY = 'config';
+const HISTORY_KEY = 'history';
+
+async function loadDefaultConfigFromFile() {
+  try {
+    const response = await fetch(chrome.runtime.getURL('config/default.json'));
+    if (!response.ok) throw new Error('Failed to load default config');
+    const fileConfig = await response.json();
+    console.log('[Config] loaded default config from file:', fileConfig);
+
+    const merged = { ...DEFAULT_CONFIG };
+    for (const key of Object.keys(fileConfig)) {
+      if (fileConfig[key] !== undefined) {
+        merged[key] = fileConfig[key];
+      }
+    }
+    return merged;
+  } catch (err) {
+    console.error('[Config] load default config from file failed:', err);
+    return { ...DEFAULT_CONFIG };
   }
-  return ocrReadyPromise;
 }
 
-async function setupOcrWindow() {
-  if (ocrWindowTabId !== null) {
-    try {
-      await chrome.tabs.get(ocrWindowTabId);
-      console.log('[Background] ocr window tab exists');
-      return;
-    } catch (e) {
-      console.log('[Background] ocr window tab gone');
-      ocrWindowTabId = null;
+async function initConfig() {
+  console.log('[Config] initializing config');
+
+  // 迁移旧版配置（旧版本直接存储在 storage root 中）
+  const legacy = await chrome.storage.local.get(['lang', 'delay', 'historyLimit']);
+  if (legacy.lang !== undefined || legacy.delay !== undefined || legacy.historyLimit !== undefined) {
+    console.log('[Config] migrating legacy config:', legacy);
+    const existing = await chrome.storage.local.get([CONFIG_KEY]);
+    const currentConfig = existing[CONFIG_KEY] || {};
+    const migrated = { ...currentConfig };
+    if (legacy.lang !== undefined && migrated.lang === undefined) migrated.lang = legacy.lang;
+    if (legacy.delay !== undefined && migrated.delay === undefined) migrated.delay = legacy.delay;
+    if (legacy.historyLimit !== undefined && migrated.historyLimit === undefined) migrated.historyLimit = legacy.historyLimit;
+    await chrome.storage.local.set({ [CONFIG_KEY]: migrated });
+    await chrome.storage.local.remove(['lang', 'delay', 'historyLimit']);
+  }
+
+  const fileDefaults = await loadDefaultConfigFromFile();
+  const stored = await chrome.storage.local.get([CONFIG_KEY]);
+  const existing = stored[CONFIG_KEY] || {};
+
+  const merged = { ...fileDefaults };
+  for (const key of Object.keys(fileDefaults)) {
+    if (existing[key] !== undefined) {
+      merged[key] = existing[key];
     }
   }
-  if (ocrWindowCreating) {
-    console.log('[Background] ocr window creating, waiting');
-    await waitOcrReady();
+
+  const hasNewKeys = Object.keys(fileDefaults).some(key => existing[key] === undefined);
+  if (hasNewKeys) {
+    console.log('[Config] merging new default fields:', merged);
+    await chrome.storage.local.set({ [CONFIG_KEY]: merged });
+  } else {
+    console.log('[Config] config already exists:', merged);
+  }
+
+  return merged;
+}
+
+async function getConfig() {
+  const fileDefaults = await loadDefaultConfigFromFile();
+  const stored = await chrome.storage.local.get([CONFIG_KEY]);
+  const config = stored[CONFIG_KEY] || fileDefaults;
+
+  const merged = { ...fileDefaults };
+  for (const key of Object.keys(fileDefaults)) {
+    if (config[key] !== undefined) {
+      merged[key] = config[key];
+    }
+  }
+
+  return merged;
+}
+
+async function setConfig(updates) {
+  const current = await getConfig();
+  const merged = { ...current, ...updates };
+  await chrome.storage.local.set({ [CONFIG_KEY]: merged });
+  console.log('[Config] updated config:', merged);
+  return merged;
+}
+
+async function getHistoryData() {
+  const stored = await chrome.storage.local.get([HISTORY_KEY]);
+  return stored[HISTORY_KEY] || [];
+}
+
+async function setHistoryData(history) {
+  await chrome.storage.local.set({ [HISTORY_KEY]: history });
+}
+
+let offscreenDocumentCreating = false;
+let offscreenDocumentReady = false;
+
+async function setupOffscreenDocument() {
+  if (offscreenDocumentReady) return;
+  if (offscreenDocumentCreating) {
+    await new Promise((resolve) => {
+      const check = setInterval(() => {
+        if (offscreenDocumentReady) {
+          clearInterval(check);
+          resolve();
+        }
+      }, 100);
+    });
     return;
   }
-  ocrWindowCreating = true;
-  ocrReadyPromise = new Promise((resolve) => { ocrReadyResolve = resolve; });
+  offscreenDocumentCreating = true;
   try {
-    console.log('[Background] creating ocr window');
-    const win = await chrome.windows.create({
-      url: 'ocr.html',
-      type: 'popup',
-      width: 400,
-      height: 300,
-      left: 0,
-      top: 0,
-      focused: false
+    if (chrome.runtime.getContexts) {
+      const contexts = await chrome.runtime.getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT']
+      });
+      if (contexts && contexts.length > 0) {
+        console.log('[Background] offscreen document already exists (getContexts)');
+        offscreenDocumentReady = true;
+        return;
+      }
+    }
+    console.log('[Background] creating offscreen document');
+    await chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['WORKERS'],
+      justification: 'Run Tesseract.js OCR worker in background'
     });
-    ocrWindowTabId = win.tabs?.[0]?.id;
-    console.log('[Background] ocr window created, waiting for ready, tab:', ocrWindowTabId);
-    await Promise.race([
-      waitOcrReady(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('OCR 窗口初始化超时')), 30000))
-    ]);
-    console.log('[Background] ocr window ready, tab:', ocrWindowTabId);
+    offscreenDocumentReady = true;
+    console.log('[Background] offscreen document created');
+  } catch (err) {
+    if (err.message && (err.message.includes('only be created') || err.message.includes('Only a single'))) {
+      console.log('[Background] offscreen document already exists (create failed)');
+      offscreenDocumentReady = true;
+    } else {
+      throw err;
+    }
   } finally {
-    ocrWindowCreating = false;
+    offscreenDocumentCreating = false;
   }
 }
 
@@ -83,9 +179,33 @@ function ensureContentScript() {
 }
 
 async function getSettings() {
-  const s = await chrome.storage.local.get(['lang', 'delay']);
-  console.log('[OCREngine] settings:', s);
-  return { lang: s.lang || 'chi_sim', delay: s.delay || 300 };
+  const config = await getConfig();
+  console.log('[OCREngine] settings:', config);
+  return config;
+}
+
+async function saveToHistory(text, type) {
+  console.log('[Background] saving to history, type:', type, 'text length:', text?.length);
+  const config = await getConfig();
+  const historyList = await getHistoryData();
+
+  const newRecord = {
+    id: Date.now().toString(),
+    text: text,
+    type: type, // 'full' or 'area'
+    timestamp: Date.now(),
+    date: new Date().toLocaleString('zh-CN')
+  };
+
+  historyList.unshift(newRecord);
+
+  // 限制历史记录数量
+  if (historyList.length > config.historyLimit) {
+    historyList.splice(config.historyLimit);
+  }
+
+  await setHistoryData(historyList);
+  console.log('[Background] saved to history, total:', historyList.length);
 }
 
 function sendToActiveTab(message) {
@@ -112,30 +232,32 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function openResult(text, error = null) {
-  console.log('[OCREngine] opening result panel, text length:', text?.length, 'error:', error);
+async function showResultInContentScript(text, error = null, type = '') {
+  console.log('[OCREngine] showing result in content script, text length:', text?.length, 'error:', error);
   const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!activeTabs.length) return;
+  if (!activeTabs.length) {
+    console.error('[OCREngine] no active tab');
+    return;
+  }
   const tabId = activeTabs[0].id;
   try {
-    await chrome.tabs.sendMessage(tabId, { action: 'showOcrResult', text, error, title: 'OCR 识别结果' });
+    await chrome.tabs.sendMessage(tabId, {
+      action: 'showOcrResult',
+      text,
+      error,
+      type,
+      title: type === 'full' ? '整页识别结果' : type === 'area' ? '框选识别结果' : 'OCR 识别结果'
+    });
     console.log('[OCREngine] result panel shown in content script');
   } catch (err) {
     console.error('[OCREngine] showOcrResult failed:', err);
-    // Fallback to result window
-    chrome.windows.create({
-      url: `result.html?text=${encodeURIComponent(text || '')}`,
-      type: 'popup',
-      width: 700,
-      height: 600
-    });
   }
 }
 
 async function recognize(images, lang) {
-  console.log('[OCREngine] recognize start (ocr window), images:', images.length, 'lang:', lang);
-  await setupOcrWindow();
-  const res = await chrome.tabs.sendMessage(ocrWindowTabId, { action: 'recognizeImages', images, lang });
+  console.log('[OCREngine] recognize start (offscreen), images:', images.length, 'lang:', lang);
+  await setupOffscreenDocument();
+  const res = await chrome.runtime.sendMessage({ action: 'recognizeImages', images, lang });
   console.log('[OCREngine] recognize response:', res);
   if (res?.error) throw new Error(res.error);
   return res?.text || '(未识别到文字)';
@@ -228,11 +350,12 @@ async function runFullPageOcr(onProgress) {
     console.log('[OCREngine] start recognize, pieces:', pieces.length);
     const text = await recognize(pieces, settings.lang);
     console.log('[OCREngine] show result panel');
-    await openResult(text);
+    await saveToHistory(text, 'full');
+    await showResultInContentScript(text, null, 'full');
     return text;
   } catch (err) {
     console.error('[OCREngine] runFullPageOcr error:', err);
-    await openResult(null, err.message);
+    await showResultInContentScript(null, err.message);
     throw err;
   } finally {
     state.isCapturing = false;
@@ -249,11 +372,12 @@ async function runAreaOcr(area, onProgress) {
   try {
     const { pieces, settings } = await captureSequence(area, onProgress);
     const text = await recognize(pieces, settings.lang);
-    await openResult(text);
+    await saveToHistory(text, 'area');
+    await showResultInContentScript(text, null, 'area');
     return text;
   } catch (err) {
     console.error('[OCREngine] runAreaOcr error:', err);
-    await openResult(null, err.message);
+    await showResultInContentScript(null, err.message);
     throw err;
   } finally {
     state.isCapturing = false;
@@ -283,10 +407,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('[Background] received message:', request.action, 'from tab', sender.tab?.id);
 
   if (request.action === 'ocrReady') {
-    console.log('[Background] ocr window reported ready');
-    if (ocrReadyResolve) ocrReadyResolve();
+    console.log('[Background] ocrReady message ignored - no longer needed');
     sendResponse({ ok: true });
-    return true;
+    return false;
   }
 
   if (request.action === 'startFullOcr') {
@@ -315,27 +438,74 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  if (request.action === 'openResult') {
-    chrome.windows.create({
-      url: `result.html?text=${encodeURIComponent(request.text)}`,
-      type: 'popup',
-      width: 700,
-      height: 600
-    });
-    sendResponse({ ok: true });
+  if (request.action === 'getHistory') {
+    (async () => {
+      try {
+        const history = await getHistoryData();
+        console.log('[Background] getHistory returning, count:', history.length, 'first item:', history[0]);
+        sendResponse({ history });
+      } catch (err) {
+        console.error('[Background] getHistory error:', err);
+        sendResponse({ history: [], error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (request.action === 'getHistoryInfo') {
+    (async () => {
+      const [historyList, config] = await Promise.all([getHistoryData(), getConfig()]);
+      const size = JSON.stringify(historyList).length;
+      const sizeKB = (size / 1024).toFixed(2);
+      sendResponse({ count: historyList.length, size: `${sizeKB} KB`, limit: config.historyLimit });
+    })();
+    return true;
+  }
+
+  if (request.action === 'deleteHistoryItem') {
+    (async () => {
+      const historyList = await getHistoryData();
+      const filtered = historyList.filter(item => item.id !== request.id);
+      await setHistoryData(filtered);
+      sendResponse({ ok: true, history: filtered });
+    })();
+    return true;
+  }
+
+  if (request.action === 'clearHistory') {
+    (async () => {
+      await setHistoryData([]);
+      sendResponse({ ok: true, history: [] });
+    })();
     return true;
   }
 
   if (request.action === 'openOptions') {
     chrome.runtime.openOptionsPage();
     sendResponse({ ok: true });
-    return true;
+    return false;
   }
 });
 
 chrome.action.onClicked.addListener((tab) => {
   console.log('[Background] action clicked, tab:', tab?.id);
   chrome.tabs.sendMessage(tab.id, { action: 'startAreaSelection' });
+});
+
+// 迁移旧版历史记录（旧版本使用 ocrHistory key）
+chrome.storage.local.get(['ocrHistory']).then(async (legacyHistory) => {
+  if (legacyHistory.ocrHistory && Array.isArray(legacyHistory.ocrHistory)) {
+    console.log('[History] migrating legacy history, count:', legacyHistory.ocrHistory.length);
+    const existing = await getHistoryData();
+    if (existing.length === 0) {
+      await setHistoryData(legacyHistory.ocrHistory);
+    }
+    await chrome.storage.local.remove(['ocrHistory']);
+  }
+});
+
+initConfig().then(() => {
+  console.log('[Background] initialization complete');
 });
 
 console.log('[Background] listeners registered');

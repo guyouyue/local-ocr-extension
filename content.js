@@ -1,7 +1,8 @@
 let overlayRoot = null;
-let resultPanelRoot = null;
 let floatBallRoot = null;
 let floatMenuRoot = null;
+let floatPanelRoot = null;
+let currentPanelMode = null;
 let tesseractReady = false;
 let tesseractLoading = null;
 
@@ -54,13 +55,14 @@ async function recognizeImages(images, lang, baseUrl) {
       console.log('[Content] tesseract logger:', m.status, m.progress);
       showStatus(`OCR: ${m.status} ${Math.round((m.progress || 0) * 100)}%`);
     },
-    errorHandler: (err) => console.error('[Content] worker error:', err)
+    errorHandler: (err) => console.error('[Content] worker error:', err),
+    workerPath: chrome.runtime.getURL('libs/tesseract/worker.min.js'),
+    corePath: chrome.runtime.getURL('libs/tesseract/'),
+    langPath: chrome.runtime.getURL('libs/tessdata/'),
+    gzip: false,
+    workerBlobURL: false
   };
 
-  // Use CDN defaults from Tesseract.js v7 to avoid chrome-extension protocol issues
-  // Default workerPath: https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/worker.min.js
-  // Default corePath: https://cdn.jsdelivr.net/npm/tesseract.js-core@v4.0.3/
-  // Default langPath: https://tessdata.projectnaptha.com/4.0.0_best_int/
   console.log('[Content] createWorker options:', workerOptions);
   let worker;
   try {
@@ -121,144 +123,6 @@ function hideStatus() {
   }
 }
 
-function showResultPanel(text, title = 'OCR 识别结果') {
-  console.log('[Content] showResultPanel, text length:', text?.length);
-  if (resultPanelRoot) resultPanelRoot.remove();
-  resultPanelRoot = document.createElement('div');
-  resultPanelRoot.id = 'kst-ocr-result-panel';
-  resultPanelRoot.style.cssText = `
-    position: fixed;
-    top: 16px;
-    right: 16px;
-    z-index: 2147483646;
-    width: 360px;
-    max-height: 80vh;
-    background: #fff;
-    color: #333;
-    border-radius: 12px;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.24);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
-    font-size: 13px;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  `;
-
-  const header = document.createElement('div');
-  header.style.cssText = `
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 14px;
-    background: #1a73e8;
-    color: #fff;
-    font-weight: 500;
-    cursor: move;
-    user-select: none;
-  `;
-  header.textContent = title;
-
-  const closeBtn = document.createElement('button');
-  closeBtn.textContent = '×';
-  closeBtn.style.cssText = `
-    background: transparent;
-    border: none;
-    color: #fff;
-    font-size: 20px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 0 4px;
-  `;
-  closeBtn.onclick = () => resultPanelRoot.remove();
-  header.appendChild(closeBtn);
-
-  const body = document.createElement('div');
-  body.style.cssText = `
-    padding: 14px;
-    overflow-y: auto;
-    max-height: calc(80vh - 50px);
-    white-space: pre-wrap;
-    word-break: break-word;
-    line-height: 1.5;
-  `;
-  body.textContent = text || '(无内容)';
-
-  const footer = document.createElement('div');
-  footer.style.cssText = `
-    display: flex;
-    gap: 8px;
-    padding: 10px 14px;
-    border-top: 1px solid #e8eaed;
-    background: #f8f9fa;
-  `;
-
-  const copyBtn = document.createElement('button');
-  copyBtn.textContent = '复制全部';
-  copyBtn.style.cssText = `
-    flex: 1;
-    padding: 8px 12px;
-    border: none;
-    border-radius: 6px;
-    background: #1a73e8;
-    color: #fff;
-    font-size: 13px;
-    cursor: pointer;
-  `;
-  copyBtn.onclick = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      copyBtn.textContent = '已复制';
-      setTimeout(() => copyBtn.textContent = '复制全部', 1500);
-    });
-  };
-
-  const downloadBtn = document.createElement('button');
-  downloadBtn.textContent = '下载 TXT';
-  downloadBtn.style.cssText = `
-    flex: 1;
-    padding: 8px 12px;
-    border: 1px solid #dadce0;
-    border-radius: 6px;
-    background: #fff;
-    color: #333;
-    font-size: 13px;
-    cursor: pointer;
-  `;
-  downloadBtn.onclick = () => {
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'ocr-result.txt';
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  footer.appendChild(copyBtn);
-  footer.appendChild(downloadBtn);
-  resultPanelRoot.appendChild(header);
-  resultPanelRoot.appendChild(body);
-  resultPanelRoot.appendChild(footer);
-  document.body.appendChild(resultPanelRoot);
-
-  // Make panel draggable
-  let isDragging = false;
-  let dragOffsetX = 0;
-  let dragOffsetY = 0;
-  header.addEventListener('mousedown', (e) => {
-    isDragging = true;
-    const rect = resultPanelRoot.getBoundingClientRect();
-    dragOffsetX = e.clientX - rect.left;
-    dragOffsetY = e.clientY - rect.top;
-  });
-  document.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
-    resultPanelRoot.style.left = `${e.clientX - dragOffsetX}px`;
-    resultPanelRoot.style.top = `${e.clientY - dragOffsetY}px`;
-    resultPanelRoot.style.right = 'auto';
-  });
-  document.addEventListener('mouseup', () => { isDragging = false; });
-}
-
 function createFloatBall() {
   console.log('[Content] createFloatBall');
   if (floatBallRoot) return;
@@ -307,7 +171,6 @@ function createFloatBall() {
     toggleFloatMenu();
   });
 
-  // Make draggable
   let isDragging = false;
   let dragStartX = 0;
   let dragStartY = 0;
@@ -364,7 +227,7 @@ function toggleFloatMenu() {
   const menuItems = [
     { label: '识别整页', icon: '📄', action: () => handleFullPageOcr() },
     { label: '框选识别', icon: '🔲', action: () => handleAreaOcr() },
-    { label: '历史记录', icon: '🕒', action: () => alert('历史记录功能开发中') },
+    { label: '历史记录', icon: '🕒', action: () => showHistoryPanel() },
     { label: '设置', icon: '⚙️', action: () => chrome.runtime.sendMessage({ action: 'openOptions' }) }
   ];
 
@@ -411,7 +274,6 @@ function toggleFloatMenu() {
 
   document.body.appendChild(floatMenuRoot);
 
-  // Close menu when clicking outside
   setTimeout(() => {
     document.addEventListener('click', closeFloatMenuOnClickOutside);
   }, 100);
@@ -425,6 +287,345 @@ function closeFloatMenuOnClickOutside(e) {
   }
 }
 
+function ensurePanel() {
+  if (floatPanelRoot) return floatPanelRoot;
+
+  floatPanelRoot = document.createElement('div');
+  floatPanelRoot.id = 'kst-ocr-float-panel';
+  floatPanelRoot.style.cssText = `
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    width: 420px;
+    max-height: 80vh;
+    background: #fff;
+    color: #333;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.24);
+    z-index: 2147483646;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+  `;
+
+  document.body.appendChild(floatPanelRoot);
+  return floatPanelRoot;
+}
+
+function showPanel(title, contentEl, mode) {
+  const panel = ensurePanel();
+  currentPanelMode = mode;
+  panel.style.display = 'flex';
+  panel.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.style.cssText = `
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: #fff;
+    font-weight: 500;
+    cursor: move;
+    user-select: none;
+  `;
+  header.textContent = title;
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '×';
+  closeBtn.style.cssText = `
+    background: transparent;
+    border: none;
+    color: #fff;
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+  `;
+  closeBtn.onclick = () => { panel.style.display = 'none'; };
+  header.appendChild(closeBtn);
+
+  const body = document.createElement('div');
+  body.style.cssText = `
+    padding: 0;
+    overflow-y: auto;
+    max-height: calc(80vh - 48px);
+  `;
+  body.appendChild(contentEl);
+
+  panel.appendChild(header);
+  panel.appendChild(body);
+
+  let isDragging = false;
+  let dragOffsetX = 0;
+  let dragOffsetY = 0;
+  header.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    const rect = panel.getBoundingClientRect();
+    dragOffsetX = e.clientX - rect.left;
+    dragOffsetY = e.clientY - rect.top;
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    panel.style.left = `${e.clientX - dragOffsetX}px`;
+    panel.style.top = `${e.clientY - dragOffsetY}px`;
+    panel.style.right = 'auto';
+  });
+  document.addEventListener('mouseup', () => { isDragging = false; });
+
+  if (floatMenuRoot) {
+    floatMenuRoot.remove();
+    floatMenuRoot = null;
+  }
+}
+
+async function showResultInPanel(text, title, type = '') {
+  console.log('[Content] showResultInPanel, text length:', text?.length);
+  const content = document.createElement('div');
+  content.style.cssText = 'padding: 14px; display: flex; flex-direction: column; gap: 12px;';
+
+  const resultText = document.createElement('div');
+  resultText.style.cssText = `
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+    max-height: 50vh;
+    overflow-y: auto;
+    padding: 10px;
+    background: #f8f9fa;
+    border-radius: 6px;
+    font-size: 13px;
+  `;
+  resultText.textContent = text || '(无内容)';
+
+  const footer = document.createElement('div');
+  footer.style.cssText = 'display: flex; gap: 8px;';
+
+  const copyBtn = createPanelButton('复制全部', '#1a73e8', '#fff');
+  copyBtn.onclick = () => {
+    navigator.clipboard.writeText(text).then(() => {
+      copyBtn.textContent = '已复制';
+      setTimeout(() => copyBtn.textContent = '复制全部', 1500);
+    });
+  };
+
+  const downloadBtn = createPanelButton('下载 TXT', '#fff', '#333');
+  downloadBtn.style.border = '1px solid #dadce0';
+  downloadBtn.onclick = () => {
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ocr-result.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const historyBtn = createPanelButton('查看历史', '#fff', '#333');
+  historyBtn.style.border = '1px solid #dadce0';
+  historyBtn.onclick = () => showHistoryPanel();
+
+  footer.appendChild(copyBtn);
+  footer.appendChild(downloadBtn);
+  footer.appendChild(historyBtn);
+  content.appendChild(resultText);
+  content.appendChild(footer);
+
+  showPanel(title || 'OCR 识别结果', content, 'result');
+}
+
+function createPanelButton(text, bg, color) {
+  const btn = document.createElement('button');
+  btn.textContent = text;
+  btn.style.cssText = `
+    flex: 1;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 6px;
+    background: ${bg};
+    color: ${color};
+    font-size: 13px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  `;
+  btn.addEventListener('mouseenter', () => btn.style.opacity = '0.85');
+  btn.addEventListener('mouseleave', () => btn.style.opacity = '1');
+  return btn;
+}
+
+async function showHistoryPanel(highlightId = null) {
+  console.log('[Content] showHistoryPanel');
+  let res;
+  try {
+    res = await chrome.runtime.sendMessage({ action: 'getHistory' });
+  } catch (err) {
+    console.error('[Content] getHistory failed:', err);
+    showResultInPanel('获取历史记录失败: ' + (err?.message || err), '错误');
+    return;
+  }
+  console.log('[Content] getHistory response:', res);
+  const history = (res && res.history) || [];
+  console.log('[Content] history count:', history.length);
+
+  const content = document.createElement('div');
+  content.style.cssText = 'display: flex; flex-direction: column;';
+
+  const toolbar = document.createElement('div');
+  toolbar.style.cssText = `
+    display: flex;
+    gap: 8px;
+    padding: 12px 14px;
+    border-bottom: 1px solid #e8eaed;
+    background: #f8f9fa;
+  `;
+
+  const clearBtn = createPanelButton('清空全部', '#ea4335', '#fff');
+  clearBtn.onclick = async () => {
+    if (!confirm('确定要清空所有历史记录吗？此操作不可恢复。')) return;
+    await chrome.runtime.sendMessage({ action: 'clearHistory' });
+    showHistoryPanel();
+  };
+
+  const exportBtn = createPanelButton('导出全部', '#fff', '#333');
+  exportBtn.style.border = '1px solid #dadce0';
+  exportBtn.onclick = async () => {
+    const res = await chrome.runtime.sendMessage({ action: 'getHistory' });
+    const history = res.history || [];
+    if (!history.length) return alert('没有历史记录可导出');
+    const text = history.map(item => {
+      return `[${item.date}] ${item.type === 'full' ? '整页识别' : '框选识别'} (${item.id})\n${item.text}\n${'='.repeat(50)}`;
+    }).join('\n\n');
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ocr-history-${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const countSpan = document.createElement('span');
+  countSpan.style.cssText = 'flex: 1; display: flex; align-items: center; justify-content: flex-end; font-size: 13px; color: #666;';
+  countSpan.textContent = `共 ${history.length} 条`;
+
+  toolbar.appendChild(clearBtn);
+  toolbar.appendChild(exportBtn);
+  toolbar.appendChild(countSpan);
+  content.appendChild(toolbar);
+
+  const listContainer = document.createElement('div');
+  listContainer.style.cssText = 'max-height: 60vh; overflow-y: auto; padding: 8px 0;';
+
+  if (history.length === 0) {
+    const emptyEl = document.createElement('div');
+    emptyEl.style.cssText = 'text-align: center; padding: 40px 20px; color: #999;';
+    emptyEl.textContent = '暂无历史记录';
+    listContainer.appendChild(emptyEl);
+  } else {
+    history.forEach((item, index) => {
+      const itemEl = document.createElement('div');
+      const isHighlighted = item.id === highlightId;
+      itemEl.style.cssText = `
+        padding: 12px 14px;
+        border-bottom: 1px solid #f0f0f0;
+        cursor: pointer;
+        transition: background 0.2s;
+        background: ${isHighlighted ? '#e8f0fe' : '#fff'};
+      `;
+      itemEl.addEventListener('mouseenter', () => { if (!isHighlighted) itemEl.style.background = '#f8f9fa'; });
+      itemEl.addEventListener('mouseleave', () => { itemEl.style.background = isHighlighted ? '#e8f0fe' : '#fff'; });
+
+      const header = document.createElement('div');
+      header.style.cssText = 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;';
+
+      const title = document.createElement('span');
+      title.style.cssText = 'font-weight: 500; color: #1a73e8; font-size: 13px;';
+      title.textContent = `#${index + 1} ${item.type === 'full' ? '整页识别' : '框选识别'}`;
+
+      const time = document.createElement('span');
+      time.style.cssText = 'font-size: 12px; color: #999;';
+      time.textContent = item.date;
+
+      const preview = document.createElement('div');
+      preview.style.cssText = `
+        font-size: 13px;
+        color: #555;
+        line-height: 1.4;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      `;
+      preview.textContent = item.text || '(无内容)';
+
+      const actions = document.createElement('div');
+      actions.style.cssText = 'display: flex; gap: 8px; margin-top: 8px;';
+
+      const viewBtn = createSmallButton('查看');
+      viewBtn.onclick = (e) => {
+        e.stopPropagation();
+        showHistoryItemDetail(item);
+      };
+
+      const copyBtn = createSmallButton('复制');
+      copyBtn.onclick = (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(item.text);
+        copyBtn.textContent = '已复制';
+        setTimeout(() => copyBtn.textContent = '复制', 1500);
+      };
+
+      const deleteBtn = createSmallButton('删除', '#ea4335');
+      deleteBtn.onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm('确定删除这条历史记录吗？')) return;
+        await chrome.runtime.sendMessage({ action: 'deleteHistoryItem', id: item.id });
+        showHistoryPanel();
+      };
+
+      actions.appendChild(viewBtn);
+      actions.appendChild(copyBtn);
+      actions.appendChild(deleteBtn);
+
+      header.appendChild(title);
+      header.appendChild(time);
+      itemEl.appendChild(header);
+      itemEl.appendChild(preview);
+      itemEl.appendChild(actions);
+
+      itemEl.addEventListener('click', () => showHistoryItemDetail(item));
+      listContainer.appendChild(itemEl);
+    });
+  }
+
+  content.appendChild(listContainer);
+  showPanel('历史记录', content, 'history');
+}
+
+function createSmallButton(text, color = '#1a73e8') {
+  const btn = document.createElement('button');
+  btn.textContent = text;
+  btn.style.cssText = `
+    padding: 4px 10px;
+    border: 1px solid ${color};
+    border-radius: 4px;
+    background: transparent;
+    color: ${color};
+    font-size: 12px;
+    cursor: pointer;
+  `;
+  return btn;
+}
+
+function showHistoryItemDetail(item) {
+  console.log('[Content] showHistoryItemDetail, id:', item.id);
+  showResultInPanel(item.text, `历史记录 #${item.id}`, item.type);
+}
+
 async function handleFullPageOcr() {
   console.log('[Content] handleFullPageOcr');
   try {
@@ -434,7 +635,7 @@ async function handleFullPageOcr() {
   } catch (err) {
     console.error('[Content] handleFullPageOcr failed:', err);
     hideStatus();
-    showResultPanel(`错误：${err.message}`, '识别失败');
+    showResultInPanel(`错误：${err.message}`, '识别失败');
   }
 }
 
@@ -442,11 +643,6 @@ async function handleAreaOcr() {
   console.log('[Content] handleAreaOcr');
   startAreaSelection();
 }
-
-// Initialize float ball on page load
-setTimeout(() => {
-  createFloatBall();
-}, 500);
 
 function getPageMetrics(captureArea = null) {
   console.log('[Content] getPageMetrics called, captureArea:', captureArea);
@@ -595,17 +791,10 @@ function startAreaSelection() {
       showStatus('正在识别框选区域…');
       const res = await chrome.runtime.sendMessage({ action: 'startAreaOcr', area: { x, y, width, height } });
       console.log('[Content] startAreaOcr response:', res);
-      if (res?.error) {
-        hideStatus();
-        showResultPanel(`错误：${res.error}`, '识别失败');
-      } else {
-        hideStatus();
-        showResultPanel(res.text || '(未识别到文字)', '框选区域识别结果');
-      }
     } catch (err) {
       console.error('[Content] startAreaOcr failed:', err);
       hideStatus();
-      showResultPanel(`错误：${err.message}`, '识别失败');
+      showResultInPanel(`错误：${err.message}`, '识别失败');
     }
   }
 
@@ -682,11 +871,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log('[Content] received showOcrResult, text length:', request.text?.length);
     hideStatus();
     if (request.error) {
-      showResultPanel(`错误：${request.error}`, '识别失败');
+      showResultInPanel(`错误：${request.error}`, '识别失败');
     } else {
-      showResultPanel(request.text || '(未识别到文字)', request.title || 'OCR 识别结果');
+      showResultInPanel(request.text || '(未识别到文字)', request.title || 'OCR 识别结果', request.type);
     }
     sendResponse({ ok: true });
     return true;
   }
 });
+
+setTimeout(() => {
+  createFloatBall();
+}, 500);

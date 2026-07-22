@@ -20,7 +20,24 @@
       <input id="delay" type="number" value="300" min="0" step="50">
     </label>
 
-    <button id="save">保存</button>
+    <label>
+      历史记录保存上限（条）
+      <input id="historyLimit" type="number" value="50" min="1" max="500" step="1">
+    </label>
+
+    <div class="section">
+      <h2>历史记录管理</h2>
+      <div class="storage-info">
+        <span id="historyCount">0</span> 条历史记录
+        <span id="storageSize" class="storage-size"></span>
+      </div>
+      <div class="button-group">
+        <button id="clearHistory" class="danger">清空历史记录</button>
+        <button id="exportHistory">导出全部历史</button>
+      </div>
+    </div>
+
+    <button id="save">保存设置</button>
     <p id="tip"></p>
   </div>
 

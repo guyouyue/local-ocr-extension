@@ -9,7 +9,8 @@
     "storage",
     "contextMenus",
     "tabs",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -41,7 +42,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["assets/*", "libs/*", "libs/tesseract/*", "libs/tessdata/*", "offscreen.html", "offscreen.js", "ocr.html", "ocr.js"],
+      "resources": ["assets/*", "libs/*", "libs/tesseract/*", "libs/tessdata/*", "config/default.json", "offscreen.html", "offscreen.js", "ocr.html", "ocr.js"],
       "matches": ["<all_urls>"]
     }
   ],

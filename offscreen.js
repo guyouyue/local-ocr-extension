@@ -15,7 +15,12 @@ async function recognizeImages(images, lang) {
 
   const worker = await Tesseract.createWorker(lang, 1, {
     logger: (m) => console.log('[Offscreen] tesseract logger:', m.status, m.progress),
-    errorHandler: (err) => console.error('[Offscreen] worker error:', err)
+    errorHandler: (err) => console.error('[Offscreen] worker error:', err),
+    workerPath: chrome.runtime.getURL('libs/tesseract/worker.min.js'),
+    corePath: chrome.runtime.getURL('libs/tesseract/'),
+    langPath: chrome.runtime.getURL('libs/tessdata/'),
+    gzip: false,
+    workerBlobURL: false
   });
 
   let allText = '';
@@ -45,6 +50,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       });
     return true;
   }
-  sendResponse({ error: '未知 action' });
-  return true;
+  // 不处理其他消息，返回 false 让其他 listener 处理
+  return false;
 });

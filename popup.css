@@ -61,6 +61,28 @@ button:not(.primary):hover {
   background: #f1f3f4;
 }
 
+.hint {
+  background: #e8f0fe;
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 13px;
+  color: #1967d2;
+  line-height: 1.6;
+}
+
+.hint p {
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.hint ul {
+  margin-left: 16px;
+}
+
+.hint li {
+  margin-bottom: 4px;
+}
+
 .status {
   margin-top: 12px;
   font-size: 13px;

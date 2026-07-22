@@ -112,19 +112,24 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function openResult(text) {
-  console.log('[OCREngine] opening result window, text length:', text?.length);
-  return new Promise((resolve) => {
+async function openResult(text, error = null) {
+  console.log('[OCREngine] opening result panel, text length:', text?.length, 'error:', error);
+  const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!activeTabs.length) return;
+  const tabId = activeTabs[0].id;
+  try {
+    await chrome.tabs.sendMessage(tabId, { action: 'showOcrResult', text, error, title: 'OCR 识别结果' });
+    console.log('[OCREngine] result panel shown in content script');
+  } catch (err) {
+    console.error('[OCREngine] showOcrResult failed:', err);
+    // Fallback to result window
     chrome.windows.create({
-      url: `result.html?text=${encodeURIComponent(text)}`,
+      url: `result.html?text=${encodeURIComponent(text || '')}`,
       type: 'popup',
       width: 700,
       height: 600
-    }, (win) => {
-      console.log('[OCREngine] result window created:', win?.id);
-      resolve(win);
     });
-  });
+  }
 }
 
 async function recognize(images, lang) {
@@ -222,11 +227,12 @@ async function runFullPageOcr(onProgress) {
     const { pieces, settings } = await captureSequence(null, onProgress);
     console.log('[OCREngine] start recognize, pieces:', pieces.length);
     const text = await recognize(pieces, settings.lang);
-    console.log('[OCREngine] open result');
+    console.log('[OCREngine] show result panel');
     await openResult(text);
     return text;
   } catch (err) {
     console.error('[OCREngine] runFullPageOcr error:', err);
+    await openResult(null, err.message);
     throw err;
   } finally {
     state.isCapturing = false;
@@ -247,6 +253,7 @@ async function runAreaOcr(area, onProgress) {
     return text;
   } catch (err) {
     console.error('[OCREngine] runAreaOcr error:', err);
+    await openResult(null, err.message);
     throw err;
   } finally {
     state.isCapturing = false;
@@ -315,6 +322,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       width: 700,
       height: 600
     });
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (request.action === 'openOptions') {
+    chrome.runtime.openOptionsPage();
     sendResponse({ ok: true });
     return true;
   }

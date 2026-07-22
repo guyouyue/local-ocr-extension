@@ -1,4 +1,7 @@
 let overlayRoot = null;
+let resultPanelRoot = null;
+let floatBallRoot = null;
+let floatMenuRoot = null;
 let tesseractReady = false;
 let tesseractLoading = null;
 
@@ -100,7 +103,7 @@ function showStatus(text) {
     color: #fff;
     padding: 12px 16px;
     border-radius: 8px;
-    font-family: sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
     font-size: 14px;
     pointer-events: none;
     max-width: 260px;
@@ -117,6 +120,333 @@ function hideStatus() {
     overlayRoot = null;
   }
 }
+
+function showResultPanel(text, title = 'OCR 识别结果') {
+  console.log('[Content] showResultPanel, text length:', text?.length);
+  if (resultPanelRoot) resultPanelRoot.remove();
+  resultPanelRoot = document.createElement('div');
+  resultPanelRoot.id = 'kst-ocr-result-panel';
+  resultPanelRoot.style.cssText = `
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 2147483646;
+    width: 360px;
+    max-height: 80vh;
+    background: #fff;
+    color: #333;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.24);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  `;
+
+  const header = document.createElement('div');
+  header.style.cssText = `
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    background: #1a73e8;
+    color: #fff;
+    font-weight: 500;
+    cursor: move;
+    user-select: none;
+  `;
+  header.textContent = title;
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '×';
+  closeBtn.style.cssText = `
+    background: transparent;
+    border: none;
+    color: #fff;
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+  `;
+  closeBtn.onclick = () => resultPanelRoot.remove();
+  header.appendChild(closeBtn);
+
+  const body = document.createElement('div');
+  body.style.cssText = `
+    padding: 14px;
+    overflow-y: auto;
+    max-height: calc(80vh - 50px);
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+  `;
+  body.textContent = text || '(无内容)';
+
+  const footer = document.createElement('div');
+  footer.style.cssText = `
+    display: flex;
+    gap: 8px;
+    padding: 10px 14px;
+    border-top: 1px solid #e8eaed;
+    background: #f8f9fa;
+  `;
+
+  const copyBtn = document.createElement('button');
+  copyBtn.textContent = '复制全部';
+  copyBtn.style.cssText = `
+    flex: 1;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 6px;
+    background: #1a73e8;
+    color: #fff;
+    font-size: 13px;
+    cursor: pointer;
+  `;
+  copyBtn.onclick = () => {
+    navigator.clipboard.writeText(text).then(() => {
+      copyBtn.textContent = '已复制';
+      setTimeout(() => copyBtn.textContent = '复制全部', 1500);
+    });
+  };
+
+  const downloadBtn = document.createElement('button');
+  downloadBtn.textContent = '下载 TXT';
+  downloadBtn.style.cssText = `
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid #dadce0;
+    border-radius: 6px;
+    background: #fff;
+    color: #333;
+    font-size: 13px;
+    cursor: pointer;
+  `;
+  downloadBtn.onclick = () => {
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ocr-result.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  footer.appendChild(copyBtn);
+  footer.appendChild(downloadBtn);
+  resultPanelRoot.appendChild(header);
+  resultPanelRoot.appendChild(body);
+  resultPanelRoot.appendChild(footer);
+  document.body.appendChild(resultPanelRoot);
+
+  // Make panel draggable
+  let isDragging = false;
+  let dragOffsetX = 0;
+  let dragOffsetY = 0;
+  header.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    const rect = resultPanelRoot.getBoundingClientRect();
+    dragOffsetX = e.clientX - rect.left;
+    dragOffsetY = e.clientY - rect.top;
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    resultPanelRoot.style.left = `${e.clientX - dragOffsetX}px`;
+    resultPanelRoot.style.top = `${e.clientY - dragOffsetY}px`;
+    resultPanelRoot.style.right = 'auto';
+  });
+  document.addEventListener('mouseup', () => { isDragging = false; });
+}
+
+function createFloatBall() {
+  console.log('[Content] createFloatBall');
+  if (floatBallRoot) return;
+
+  floatBallRoot = document.createElement('div');
+  floatBallRoot.id = 'kst-ocr-float-ball';
+  floatBallRoot.style.cssText = `
+    position: fixed;
+    bottom: 80px;
+    right: 20px;
+    width: 56px;
+    height: 56px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 50%;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    cursor: pointer;
+    z-index: 2147483645;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s, box-shadow 0.2s;
+    user-select: none;
+  `;
+
+  const icon = document.createElement('div');
+  icon.style.cssText = `
+    width: 28px;
+    height: 28px;
+    background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white"><path d="M21 5c-1.11-.35-2.33-.5-3.5-.5-1.95 0-4.05.4-5.5 1.5-1.45-1.1-3.55-1.5-5.5-1.5S2.45 4.9 1 6v14.65c0 .25.25.5.5.5.1 0 .15-.05.25-.05C3.1 20.45 5.05 20 6.5 20c1.95 0 4.05.4 5.5 1.5 1.35-.85 3.8-1.5 5.5-1.5 1.65 0 3.35.3 4.75 1.05.1.05.15.05.25.05.25 0 .5-.25.5-.5V6c-.6-.45-1.25-.75-2-1zm0 13.5c-1.1-.35-2.3-.5-3.5-.5-1.7 0-4.15.65-5.5 1.5V8c1.35-.85 3.8-1.5 5.5-1.5 1.2 0 2.4.15 3.5.5v11.5z"/></svg>') center/contain no-repeat;
+    pointer-events: none;
+  `;
+  floatBallRoot.appendChild(icon);
+
+  floatBallRoot.addEventListener('mouseenter', () => {
+    floatBallRoot.style.transform = 'scale(1.1)';
+    floatBallRoot.style.boxShadow = '0 6px 16px rgba(0,0,0,0.2)';
+  });
+
+  floatBallRoot.addEventListener('mouseleave', () => {
+    floatBallRoot.style.transform = 'scale(1)';
+    floatBallRoot.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+  });
+
+  floatBallRoot.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleFloatMenu();
+  });
+
+  // Make draggable
+  let isDragging = false;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let ballStartX = 0;
+  let ballStartY = 0;
+
+  floatBallRoot.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    const rect = floatBallRoot.getBoundingClientRect();
+    ballStartX = rect.left;
+    ballStartY = rect.top;
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    const deltaX = e.clientX - dragStartX;
+    const deltaY = e.clientY - dragStartY;
+    floatBallRoot.style.left = `${ballStartX + deltaX}px`;
+    floatBallRoot.style.top = `${ballStartY + deltaY}px`;
+    floatBallRoot.style.bottom = 'auto';
+    floatBallRoot.style.right = 'auto';
+  });
+
+  document.addEventListener('mouseup', () => { isDragging = false; });
+
+  document.body.appendChild(floatBallRoot);
+}
+
+function toggleFloatMenu() {
+  if (floatMenuRoot) {
+    floatMenuRoot.remove();
+    floatMenuRoot = null;
+    return;
+  }
+
+  const ballRect = floatBallRoot.getBoundingClientRect();
+  floatMenuRoot = document.createElement('div');
+  floatMenuRoot.id = 'kst-ocr-float-menu';
+  floatMenuRoot.style.cssText = `
+    position: fixed;
+    bottom: ${window.innerHeight - ballRect.top + 10}px;
+    right: ${window.innerWidth - ballRect.right}px;
+    width: 180px;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+    z-index: 2147483644;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
+  `;
+
+  const menuItems = [
+    { label: '识别整页', icon: '📄', action: () => handleFullPageOcr() },
+    { label: '框选识别', icon: '🔲', action: () => handleAreaOcr() },
+    { label: '历史记录', icon: '🕒', action: () => alert('历史记录功能开发中') },
+    { label: '设置', icon: '⚙️', action: () => chrome.runtime.sendMessage({ action: 'openOptions' }) }
+  ];
+
+  menuItems.forEach((item, index) => {
+    const menuItem = document.createElement('div');
+    menuItem.style.cssText = `
+      padding: 12px 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      color: #333;
+      transition: background 0.2s;
+      ${index < menuItems.length - 1 ? 'border-bottom: 1px solid #f0f0f0;' : ''}
+    `;
+
+    const iconSpan = document.createElement('span');
+    iconSpan.textContent = item.icon;
+    iconSpan.style.fontSize = '18px';
+
+    const labelSpan = document.createElement('span');
+    labelSpan.textContent = item.label;
+
+    menuItem.appendChild(iconSpan);
+    menuItem.appendChild(labelSpan);
+
+    menuItem.addEventListener('mouseenter', () => {
+      menuItem.style.background = '#f5f5f5';
+    });
+
+    menuItem.addEventListener('mouseleave', () => {
+      menuItem.style.background = '#fff';
+    });
+
+    menuItem.addEventListener('click', () => {
+      floatMenuRoot.remove();
+      floatMenuRoot = null;
+      item.action();
+    });
+
+    floatMenuRoot.appendChild(menuItem);
+  });
+
+  document.body.appendChild(floatMenuRoot);
+
+  // Close menu when clicking outside
+  setTimeout(() => {
+    document.addEventListener('click', closeFloatMenuOnClickOutside);
+  }, 100);
+}
+
+function closeFloatMenuOnClickOutside(e) {
+  if (floatMenuRoot && !floatMenuRoot.contains(e.target) && !floatBallRoot.contains(e.target)) {
+    floatMenuRoot.remove();
+    floatMenuRoot = null;
+    document.removeEventListener('click', closeFloatMenuOnClickOutside);
+  }
+}
+
+async function handleFullPageOcr() {
+  console.log('[Content] handleFullPageOcr');
+  try {
+    showStatus('正在识别整页…');
+    const res = await chrome.runtime.sendMessage({ action: 'startFullOcr' });
+    console.log('[Content] startFullOcr response:', res);
+  } catch (err) {
+    console.error('[Content] handleFullPageOcr failed:', err);
+    hideStatus();
+    showResultPanel(`错误：${err.message}`, '识别失败');
+  }
+}
+
+async function handleAreaOcr() {
+  console.log('[Content] handleAreaOcr');
+  startAreaSelection();
+}
+
+// Initialize float ball on page load
+setTimeout(() => {
+  createFloatBall();
+}, 500);
 
 function getPageMetrics(captureArea = null) {
   console.log('[Content] getPageMetrics called, captureArea:', captureArea);
@@ -263,10 +593,19 @@ function startAreaSelection() {
     console.log('[Content] area selected:', { x, y, width, height });
     try {
       showStatus('正在识别框选区域…');
-      await chrome.runtime.sendMessage({ action: 'startAreaOcr', area: { x, y, width, height } });
+      const res = await chrome.runtime.sendMessage({ action: 'startAreaOcr', area: { x, y, width, height } });
+      console.log('[Content] startAreaOcr response:', res);
+      if (res?.error) {
+        hideStatus();
+        showResultPanel(`错误：${res.error}`, '识别失败');
+      } else {
+        hideStatus();
+        showResultPanel(res.text || '(未识别到文字)', '框选区域识别结果');
+      }
     } catch (err) {
       console.error('[Content] startAreaOcr failed:', err);
       hideStatus();
+      showResultPanel(`错误：${err.message}`, '识别失败');
     }
   }
 
@@ -337,6 +676,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.error('[Content] recognizeImages error:', msg, err);
         sendResponse({ error: msg });
       });
+    return true;
+  }
+  if (request.action === 'showOcrResult') {
+    console.log('[Content] received showOcrResult, text length:', request.text?.length);
+    hideStatus();
+    if (request.error) {
+      showResultPanel(`错误：${request.error}`, '识别失败');
+    } else {
+      showResultPanel(request.text || '(未识别到文字)', request.title || 'OCR 识别结果');
+    }
+    sendResponse({ ok: true });
     return true;
   }
 });

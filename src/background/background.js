@@ -287,8 +287,16 @@ async function captureSequence(captureArea = null, onProgress) {
 
   const pieces = [];
 
-  for (let y = 0; y < m.totalHeight; y += m.viewportHeight) {
-    const offset = Math.min(y, Math.max(0, m.totalHeight - m.viewportHeight));
+  // 确定截取范围
+  const startY = captureArea ? captureArea.y : 0;
+  const endY = captureArea ? (captureArea.y + captureArea.height) : m.totalHeight;
+
+  console.log('[OCREngine] capture loop starting, startY:', startY, 'endY:', endY, 'viewportHeight:', m.viewportHeight, 'totalHeight:', m.totalHeight);
+  let loopCount = 0;
+  for (let y = startY; y < endY; y += m.viewportHeight) {
+    loopCount++;
+    const offset = Math.min(y, Math.max(0, endY - m.viewportHeight));
+    console.log(`[OCREngine] loop ${loopCount}: y=${y}, offset=${offset}, viewportHeight=${m.viewportHeight}, totalHeight=${m.totalHeight}`);
     console.log('[OCREngine] scrolling to', offset);
     await sendToActiveTab({ action: 'scrollToY', y: offset });
     await sleep(Math.max(settings.delay, 1200));
@@ -329,7 +337,12 @@ async function captureSequence(captureArea = null, onProgress) {
       throw new Error(cropResult.error);
     }
 
-    if (offset + m.viewportHeight >= m.totalHeight) break;
+    const shouldBreak = offset + m.viewportHeight >= endY;
+    console.log(`[OCREngine] loop ${loopCount}: offset(${offset}) + viewportHeight(${m.viewportHeight}) = ${offset + m.viewportHeight}, endY=${endY}, shouldBreak=${shouldBreak}`);
+    if (shouldBreak) {
+      console.log('[OCREngine] breaking loop, captured all content');
+      break;
+    }
   }
 
   console.log('[OCREngine] scroll back to top');
@@ -392,14 +405,18 @@ async function runContainerOcr(container, onProgress) {
   }
   state.isCapturing = true;
   try {
-    // 容器识别使用与区域识别相同的逻辑，但使用容器的完整高度
+    // 容器识别：需要截取从容器顶部到底部的完整内容
+    // captureArea 应该覆盖整个容器在页面中的范围
+    const containerHeight = container.scrollHeight || container.height;
     const captureArea = {
       x: container.x,
       y: container.y,
       width: container.width,
-      height: container.scrollHeight || container.height
+      height: containerHeight
     };
     console.log('[OCREngine] container capture area:', captureArea);
+    console.log('[OCREngine] will capture from Y=' + container.y + ' to Y=' + (container.y + containerHeight));
+
     const { pieces, settings } = await captureSequence(captureArea, onProgress);
     const text = await recognize(pieces, settings.lang);
     await saveToHistory(text, 'container');

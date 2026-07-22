@@ -793,21 +793,28 @@ function startContainerSelection() {
     const containerX = rect.left + scrollX;
     const containerY = rect.top + scrollY;
     const containerWidth = rect.width;
-    const containerHeight = rect.height;
 
-    // 检查容器是否有滚动内容
+    // 获取容器的真实高度：优先使用 scrollHeight，否则使用 rect.height
     const scrollHeight = currentElement.scrollHeight;
+    const offsetHeight = currentElement.offsetHeight;
     const clientHeight = currentElement.clientHeight;
+    const rectHeight = rect.height;
+
+    // 使用最大的高度值
+    const containerHeight = Math.max(scrollHeight, offsetHeight, rectHeight);
     const hasScroll = scrollHeight > clientHeight;
 
     console.log('[Content] container selected:', {
       element: currentElement.tagName,
+      className: currentElement.className,
       x: containerX,
       y: containerY,
       width: containerWidth,
-      height: containerHeight,
-      scrollHeight,
+      'rect.height': rectHeight,
+      offsetHeight,
       clientHeight,
+      scrollHeight,
+      'containerHeight(max)': containerHeight,
       hasScroll
     });
 
@@ -820,7 +827,7 @@ function startContainerSelection() {
           y: containerY,
           width: containerWidth,
           height: containerHeight,
-          scrollHeight: hasScroll ? scrollHeight : containerHeight,
+          scrollHeight: containerHeight,
           element: currentElement.tagName
         }
       });
@@ -876,7 +883,14 @@ function getPageMetrics(captureArea = null) {
     devicePixelRatio: window.devicePixelRatio || 1,
     captureArea: captureArea ? { x: captureArea.x, y: captureArea.y, width: captureArea.width, height: captureArea.height } : null
   };
-  console.log('[Content] metrics:', metrics);
+  console.log('[Content] metrics calculated:', {
+    ...metrics,
+    captureAreaProvided: !!captureArea,
+    captureAreaHeight: captureArea?.height,
+    scrollHeight: captureArea?.scrollHeight,
+    viewportHeight: height,
+    loops: Math.ceil(fullHeight / height)
+  });
   return metrics;
 }
 
@@ -910,21 +924,47 @@ function cropScreenshot(dataUrl, offsetY, metrics, captureArea) {
         const ah = captureArea.height * dpr;
         const offsetYPx = offsetY * dpr;
 
-        if (ay + ah <= offsetYPx || ay >= offsetYPx + vpH) {
+        // 容器在页面中的范围：[ay, ay + ah]
+        // 当前视口的范围：[offsetYPx, offsetYPx + vpH]
+
+        const containerTop = ay;
+        const containerBottom = ay + ah;
+        const viewportTop = offsetYPx;
+        const viewportBottom = offsetYPx + vpH;
+
+        // 检查容器是否在当前视口中可见
+        if (containerBottom <= viewportTop || containerTop >= viewportBottom) {
           console.log('[Content] area out of current viewport, skip');
           return resolve(null);
         }
 
+        // 计算容器在当前视口中的可见部分
+        const visibleTop = Math.max(containerTop, viewportTop);
+        const visibleBottom = Math.min(containerBottom, viewportBottom);
+
+        // 转换为相对于当前视口的坐标
         srcX = ax;
-        srcY = Math.max(0, ay - offsetYPx);
-        const maxSrcH = vpH - srcY;
+        srcY = visibleTop - viewportTop;
         srcW = aw;
-        srcH = Math.min(ah, maxSrcH);
+        srcH = visibleBottom - visibleTop;
+
+        console.log('[Content] crop calculation:', {
+          containerTop,
+          containerBottom,
+          viewportTop,
+          viewportBottom,
+          visibleTop,
+          visibleBottom,
+          srcX: srcX / dpr,
+          srcY: srcY / dpr,
+          srcW: srcW / dpr,
+          srcH: srcH / dpr
+        });
       }
 
       canvas.width = srcW;
       canvas.height = srcH;
-      console.log('[Content] cropping canvas:', srcW, 'x', srcH, 'from', srcX, srcY);
+      console.log('[Content] cropping canvas:', srcW / dpr, 'x', srcH / dpr, 'from', srcX / dpr, srcY / dpr);
       ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
       resolve({ result: canvas.toDataURL('image/png') });
     };

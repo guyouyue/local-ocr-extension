@@ -23,6 +23,18 @@ async function recognizeImages(images, lang) {
     workerBlobURL: false
   });
 
+  // 优化 Tesseract 参数以提升识别率
+  await worker.setParameters({
+    tessedit_pageseg_mode: Tesseract.PSM.AUTO,  // 自动页面分割
+    preserve_interword_spaces: '1',              // 保留词间空格
+    tessedit_char_whitelist: '',                 // 不限制字符集
+    // 提升识别质量
+    textord_heavy_nr: '1',                       // 更好的噪声处理
+    // 中文特定优化
+    language_model_penalty_non_dict_word: '0.5', // 降低非字典词的惩罚
+    language_model_penalty_non_freq_dict_word: '0.5'
+  });
+
   let allText = '';
   for (let i = 0; i < images.length; i++) {
     console.log('[Offscreen] recognizing image', i + 1, '/', images.length);

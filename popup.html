@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Local OCR</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Local OCR</h1>
+    <p class="desc">整页/区域 OCR 识别</p>
+
+    <div class="btn-group">
+      <button id="btn-full" class="primary">识别整页</button>
+      <button id="btn-area">框选识别</button>
+      <button id="btn-settings">设置</button>
+    </div>
+
+    <div id="status" class="status"></div>
+    <div id="result" class="result"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Local OCR 设置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="container">
+    <h1>设置</h1>
+
+    <label>
+      OCR 语言（tessdata 语言包，多个用 + 连接）
+      <input id="lang" type="text" value="chi_sim">
+    </label>
+
+    <label>
+      每次滚动后等待时间（毫秒）
+      <input id="delay" type="number" value="300" min="0" step="50">
+    </label>
+
+    <button id="save">保存</button>
+    <p id="tip"></p>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

@@ -5,90 +5,114 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Local OCR 设置</title>
   <link rel="stylesheet" href="options.css">
+  <style>
+    .field { margin-bottom: 16px; }
+    .field label { display: block; font-size: 13px; color: #555; margin-bottom: 6px; }
+    .field input[type="number"],
+    .field input[type="text"],
+    .field input[type="password"],
+    .field select { width: 100%; box-sizing: border-box; }
+    .field input[type="number"].short { width: 100px; }
+    .field small { display: block; margin-top: 4px; font-size: 12px; color: #888; }
+
+    .check-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; cursor: pointer; }
+    .check-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0; cursor: pointer; flex-shrink: 0; }
+    .check-row span { font-size: 14px; color: #333; line-height: 1.4; }
+
+    .sub-box { margin: 0 0 16px; padding: 14px 16px; background: #f5f5f5; border-radius: 6px; }
+    .sub-box h3 { margin: 0 0 12px; font-size: 14px; color: #333; }
+
+    .continuous-box { padding: 14px 16px; background: #fff8e1; border-radius: 6px; margin-bottom: 16px; border-left: 4px solid #f9a825; }
+    .continuous-box h3 { margin: 0 0 12px; font-size: 14px; color: #e65100; }
+    .continuous-box .desc { margin: 12px 0 0; font-size: 12px; color: #888; line-height: 1.6; }
+  </style>
 </head>
 <body>
   <div class="container">
     <h1>设置</h1>
 
-    <label>
-      OCR 引擎
+    <!-- OCR 引擎 -->
+    <div class="field">
+      <label>OCR 引擎</label>
       <select id="ocrEngine">
         <option value="tesseract">Tesseract (默认)</option>
         <option value="paddleocr">PaddleOCR API (高精度在线识别)</option>
       </select>
-    </label>
+    </div>
 
     <!-- Tesseract 配置 -->
-    <div id="tesseractSettings" style="margin-left: 20px; padding: 10px; background: #f5f5f5; border-radius: 4px; margin-bottom: 15px;">
-      <h3 style="margin: 0 0 10px 0; font-size: 14px;">Tesseract 配置</h3>
-      <label>
-        识别语言（tessdata 语言包，多个用 + 连接）
+    <div id="tesseractSettings" class="sub-box">
+      <h3>Tesseract 配置</h3>
+      <div class="field">
+        <label>识别语言（tessdata 语言包，多个用 + 连接）</label>
         <input id="lang" type="text" value="chi_sim">
-        <small style="display: block; margin-top: 5px; color: #666;">
-          常用：chi_sim (简体中文), eng (英文), chi_sim_best (高精度简体中文)
-        </small>
-      </label>
+        <small>常用：chi_sim (简体中文), eng (英文), chi_sim_best (高精度简体中文)</small>
+      </div>
     </div>
 
     <!-- PaddleOCR API 配置 -->
-    <div id="paddleocrSettings" style="display: none; margin-left: 20px; padding: 10px; background: #f5f5f5; border-radius: 4px; margin-bottom: 15px;">
-      <h3 style="margin: 0 0 10px 0; font-size: 14px;">PaddleOCR API 配置</h3>
-      <label>
-        API Token <span style="color: red;">*</span>
+    <div id="paddleocrSettings" class="sub-box" style="display: none;">
+      <h3>PaddleOCR API 配置</h3>
+      <div class="field">
+        <label>API Token <span style="color: red;">*</span></label>
         <input id="paddleOcrApiToken" type="password" placeholder="请输入您的 PaddleOCR API Token">
-        <small style="display: block; margin-top: 5px; color: #666;">
-          获取 Token：<a href="https://paddleocr.aistudio-app.com" target="_blank">https://paddleocr.aistudio-app.com</a>
-        </small>
-      </label>
-
-      <label>
-        API 模型
+        <small>获取 Token：<a href="https://paddleocr.aistudio-app.com" target="_blank">https://paddleocr.aistudio-app.com</a></small>
+      </div>
+      <div class="field">
+        <label>API 模型</label>
         <select id="paddleOcrApiModel">
           <option value="PaddleOCR-VL-1.6">PaddleOCR-VL-1.6 (推荐，多模态)</option>
           <option value="PP-OCRv6">PP-OCRv6 (高精度文字识别)</option>
           <option value="PP-StructureV3">PP-StructureV3 (表格结构识别)</option>
         </select>
-        <small style="display: block; margin-top: 5px; color: #666;">
-          不同模型适用于不同场景，通用场景推荐使用 PaddleOCR-VL-1.6
-        </small>
-      </label>
+        <small>不同模型适用于不同场景，通用场景推荐使用 PaddleOCR-VL-1.6</small>
+      </div>
     </div>
 
-    <label>
-      每次滚动后等待时间（毫秒）
-      <input id="delay" type="number" value="300" min="0" step="50">
-    </label>
+    <!-- 公共配置 -->
+    <div class="field">
+      <label>每次滚动后等待时间（毫秒）</label>
+      <input id="delay" type="number" class="short" value="300" min="0" step="50">
+    </div>
 
-    <label>
-      历史记录保存上限（条）
-      <input id="historyLimit" type="number" value="50" min="1" max="500" step="1">
-    </label>
+    <div class="field">
+      <label>历史记录保存上限（条）</label>
+      <input id="historyLimit" type="number" class="short" value="50" min="1" max="500" step="1">
+    </div>
 
-    <div style="padding: 12px; background: #fff8e1; border-radius: 6px; margin-bottom: 15px; border-left: 4px solid #f9a825;">
-      <h3 style="margin: 0 0 8px 0; font-size: 14px; color: #e65100;">📖 连页模式（自动翻页识别）</h3>
-      <label style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px; cursor: pointer;">
-        <input id="continuousPageMode" type="checkbox">
-        <span style="font-size: 14px; font-weight: 500;">启用连页模式</span>
-      </label>
-      <label style="margin-bottom: 8px;">
-        最大连页数量
-        <input id="maxContinuousPages" type="number" value="20" min="1" max="200" step="1" style="width: 80px;">
-        <small style="display: inline; margin-left: 5px; color: #666;">（防止无限翻页）</small>
-      </label>
-      <label style="margin-bottom: 8px;">
-        跳页等待时间（毫秒）
-        <input id="pageFlipDelay" type="number" value="2000" min="500" max="10000" step="500" style="width: 80px;">
-        <small style="display: inline; margin-left: 5px; color: #666;">（点击下一页后等待页面加载的时间）</small>
-      </label>
-      <label style="display: flex; align-items: center; gap: 10px; margin-top: 4px; cursor: pointer;">
+    <div class="field">
+      <label class="check-row" style="margin-bottom: 0;">
         <input id="saveDebugScreenshots" type="checkbox">
-        <span style="font-size: 14px;">保存调试截图（开启后每次 OCR 截图将自动下载到本地 temp/ 目录）</span>
+        <span>保存调试截图</span>
       </label>
-      <p style="margin: 0; font-size: 12px; color: #666; line-height: 1.5;">
-        开启后，OCR 完成当前页后会自动查找并点击"下一页"按钮，继续识别下一页内容，直到无法翻页或达到最大页数为止。适用于有分页的内容（如小说章节、文档翻页等）。所有分页内容将合并到同一条历史记录中。
-      </p>
+      <small style="margin-top: 4px; font-size: 12px; color: #888; display: block; padding-left: 24px;">开启后每次 OCR 截图将自动下载到本地 temp/ 目录，用于排查定位问题</small>
     </div>
 
+    <!-- 连页模式 -->
+    <div class="continuous-box">
+      <h3>📖 连页模式（自动翻页识别）</h3>
+
+      <label class="check-row">
+        <input id="continuousPageMode" type="checkbox">
+        <span>启用连页模式</span>
+      </label>
+
+      <div class="field">
+        <label>最大连页数量</label>
+        <input id="maxContinuousPages" type="number" class="short" value="20" min="1" max="200" step="1">
+        <small>防止无限翻页</small>
+      </div>
+
+      <div class="field">
+        <label>跳页等待时间（毫秒）</label>
+        <input id="pageFlipDelay" type="number" class="short" value="2000" min="500" max="10000" step="500">
+        <small>点击下一页后等待页面加载的时间</small>
+      </div>
+
+      <p class="desc">开启后，OCR 完成当前页后会自动查找并点击"下一页"按钮，继续识别下一页内容，直到无法翻页或达到最大页数为止。适用于有分页的内容（如小说章节、文档翻页等）。所有分页内容将合并到同一条历史记录中。</p>
+    </div>
+
+    <!-- 历史记录管理 -->
     <div class="section">
       <h2>历史记录管理</h2>
       <div class="storage-info">

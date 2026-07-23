@@ -10,11 +10,22 @@
     "contextMenus",
     "tabs",
     "unlimitedStorage",
-    "offscreen"
+    "offscreen",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "paddleocr_cors",
+        "enabled": true,
+        "path": "rules/paddleocr-cors.json"
+      }
+    ]
+  },
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
@@ -42,7 +53,19 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["assets/*", "libs/*", "libs/tesseract/*", "libs/tessdata/*", "config/default.json", "src/offscreen/offscreen.html", "src/offscreen/offscreen.js", "src/pages/ocr/ocr.html", "src/pages/ocr/ocr.js"],
+      "resources": [
+        "assets/*",
+        "libs/*",
+        "libs/tesseract/*",
+        "libs/tessdata/*",
+        "libs/paddleocr/*",
+        "config/default.json",
+        "config/ocr-mode.json",
+        "src/offscreen/offscreen.html",
+        "src/offscreen/offscreen.js",
+        "src/pages/ocr/ocr.html",
+        "src/pages/ocr/ocr.js"
+      ],
       "matches": ["<all_urls>"]
     }
   ],

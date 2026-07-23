@@ -3,9 +3,27 @@
 <head>
   <meta charset="UTF-8">
   <title>OCR Offscreen</title>
+  <script>
+    console.log('[Offscreen HTML] page loading started');
+    window.addEventListener('error', (e) => {
+      console.error('[Offscreen HTML] Script error:', e.filename, e.message, e.error);
+    });
+    window.addEventListener('load', () => {
+      console.log('[Offscreen HTML] window load event fired');
+    });
+  </script>
   <script src="../../libs/tesseract/tesseract.min.js"></script>
+  <script>console.log('[Offscreen HTML] tesseract.min.js loaded, Tesseract:', typeof Tesseract);</script>
+  <script src="../../libs/paddleocr/paddleocr-api.js"></script>
+  <script>console.log('[Offscreen HTML] paddleocr-api.js loaded, PaddleOCRAPI:', typeof PaddleOCRAPI);</script>
   <script src="offscreen.js"></script>
+  <script>console.log('[Offscreen HTML] offscreen.js loaded');</script>
 </head>
 <body>
+  <div id="status">Offscreen document ready</div>
+  <script>
+    console.log('[Offscreen HTML] page loaded, body ready');
+    document.getElementById('status').textContent = 'Offscreen document initialized at ' + new Date().toISOString();
+  </script>
 </body>
 </html>

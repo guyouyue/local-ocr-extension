@@ -11,9 +11,48 @@
     <h1>设置</h1>
 
     <label>
-      OCR 语言（tessdata 语言包，多个用 + 连接）
-      <input id="lang" type="text" value="chi_sim">
+      OCR 引擎
+      <select id="ocrEngine">
+        <option value="tesseract">Tesseract (默认)</option>
+        <option value="paddleocr">PaddleOCR API (高精度在线识别)</option>
+      </select>
     </label>
+
+    <!-- Tesseract 配置 -->
+    <div id="tesseractSettings" style="margin-left: 20px; padding: 10px; background: #f5f5f5; border-radius: 4px; margin-bottom: 15px;">
+      <h3 style="margin: 0 0 10px 0; font-size: 14px;">Tesseract 配置</h3>
+      <label>
+        识别语言（tessdata 语言包，多个用 + 连接）
+        <input id="lang" type="text" value="chi_sim">
+        <small style="display: block; margin-top: 5px; color: #666;">
+          常用：chi_sim (简体中文), eng (英文), chi_sim_best (高精度简体中文)
+        </small>
+      </label>
+    </div>
+
+    <!-- PaddleOCR API 配置 -->
+    <div id="paddleocrSettings" style="display: none; margin-left: 20px; padding: 10px; background: #f5f5f5; border-radius: 4px; margin-bottom: 15px;">
+      <h3 style="margin: 0 0 10px 0; font-size: 14px;">PaddleOCR API 配置</h3>
+      <label>
+        API Token <span style="color: red;">*</span>
+        <input id="paddleOcrApiToken" type="password" placeholder="请输入您的 PaddleOCR API Token">
+        <small style="display: block; margin-top: 5px; color: #666;">
+          获取 Token：<a href="https://paddleocr.aistudio-app.com" target="_blank">https://paddleocr.aistudio-app.com</a>
+        </small>
+      </label>
+
+      <label>
+        API 模型
+        <select id="paddleOcrApiModel">
+          <option value="PaddleOCR-VL-1.6">PaddleOCR-VL-1.6 (推荐，多模态)</option>
+          <option value="PP-OCRv6">PP-OCRv6 (高精度文字识别)</option>
+          <option value="PP-StructureV3">PP-StructureV3 (表格结构识别)</option>
+        </select>
+        <small style="display: block; margin-top: 5px; color: #666;">
+          不同模型适用于不同场景，通用场景推荐使用 PaddleOCR-VL-1.6
+        </small>
+      </label>
+    </div>
 
     <label>
       每次滚动后等待时间（毫秒）

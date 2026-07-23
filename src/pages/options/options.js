@@ -1,7 +1,11 @@
 document.addEventListener('DOMContentLoaded', async () => {
+  const ocrEngineSelect = document.getElementById('ocrEngine');
   const langInput = document.getElementById('lang');
   const delayInput = document.getElementById('delay');
   const historyLimitInput = document.getElementById('historyLimit');
+  const paddleocrSettings = document.getElementById('paddleocrSettings');
+  const paddleOcrApiTokenInput = document.getElementById('paddleOcrApiToken');
+  const paddleOcrApiModelSelect = document.getElementById('paddleOcrApiModel');
   const saveBtn = document.getElementById('save');
   const clearHistoryBtn = document.getElementById('clearHistory');
   const exportHistoryBtn = document.getElementById('exportHistory');
@@ -13,9 +17,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   const stored = await chrome.storage.local.get(['config']);
   const config = stored.config || {};
 
+  if (config.ocrEngine) ocrEngineSelect.value = config.ocrEngine;
   if (config.lang) langInput.value = config.lang;
   if (config.delay != null) delayInput.value = config.delay;
   if (config.historyLimit != null) historyLimitInput.value = config.historyLimit;
+  if (config.paddleOcrApiToken) paddleOcrApiTokenInput.value = config.paddleOcrApiToken;
+  if (config.paddleOcrApiModel) paddleOcrApiModelSelect.value = config.paddleOcrApiModel;
+
+  // 根据选择的引擎显示/隐藏对应的配置
+  function updateEngineSettings() {
+    const engine = ocrEngineSelect.value;
+    const tesseractSettings = document.getElementById('tesseractSettings');
+    const paddleocrSettings = document.getElementById('paddleocrSettings');
+
+    if (engine === 'tesseract') {
+      tesseractSettings.style.display = 'block';
+      paddleocrSettings.style.display = 'none';
+    } else if (engine === 'paddleocr') {
+      tesseractSettings.style.display = 'none';
+      paddleocrSettings.style.display = 'block';
+    }
+  }
+
+  updateEngineSettings();
+  ocrEngineSelect.addEventListener('change', updateEngineSettings);
 
   async function updateHistoryInfo() {
     const res = await chrome.runtime.sendMessage({ action: 'getHistoryInfo' });
@@ -29,13 +54,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     const currentConfig = stored.config || {};
     const updatedConfig = {
       ...currentConfig,
+      ocrEngine: ocrEngineSelect.value,
       lang: langInput.value.trim(),
       delay: parseInt(delayInput.value, 10) || 300,
-      historyLimit: parseInt(historyLimitInput.value, 10) || 50
+      historyLimit: parseInt(historyLimitInput.value, 10) || 50,
+      paddleOcrApiToken: paddleOcrApiTokenInput.value.trim(),
+      paddleOcrApiModel: paddleOcrApiModelSelect.value
     };
+
+    // 验证：如果选择了 PaddleOCR，必须填写 token
+    if (updatedConfig.ocrEngine === 'paddleocr' && !updatedConfig.paddleOcrApiToken) {
+      tip.textContent = '请填写 PaddleOCR API Token';
+      tip.style.color = 'red';
+      setTimeout(() => {
+        tip.textContent = '';
+        tip.style.color = '';
+      }, 3000);
+      return;
+    }
+
     await chrome.storage.local.set({ config: updatedConfig });
     tip.textContent = '已保存';
-    setTimeout(() => tip.textContent = '', 2000);
+    tip.style.color = 'green';
+    setTimeout(() => {
+      tip.textContent = '';
+      tip.style.color = '';
+    }, 2000);
   });
 
   clearHistoryBtn.addEventListener('click', async () => {

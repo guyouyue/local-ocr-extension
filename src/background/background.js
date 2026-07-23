@@ -102,8 +102,43 @@ async function setHistoryData(history) {
   await chrome.storage.local.set({ [HISTORY_KEY]: history });
 }
 
-let offscreenDocumentCreating = false;
+// ========================================
+// OCR 执行模式配置
+// ========================================
+// 从 config/ocr-mode.json 读取配置
+// 'offscreen' - 使用 offscreen document (Manifest V3 推荐，用户完全无感知)
+// 'popup' - 使用隐藏的弹出窗口 (兼容性好，但用户可能在任务栏看到)
+let OCR_MODE = 'popup'; // 默认值，启动后会从配置文件加载
+
+async function loadOcrMode() {
+  try {
+    const response = await fetch(chrome.runtime.getURL('config/ocr-mode.json'));
+    if (!response.ok) {
+      console.warn('[Background] Failed to load ocr-mode.json, using default:', OCR_MODE);
+      return;
+    }
+    const config = await response.json();
+    if (config.mode && (config.mode === 'offscreen' || config.mode === 'popup')) {
+      OCR_MODE = config.mode;
+      console.log('[Background] OCR mode loaded from config:', OCR_MODE);
+    } else {
+      console.warn('[Background] Invalid mode in ocr-mode.json, using default:', OCR_MODE);
+    }
+  } catch (err) {
+    console.error('[Background] Failed to load OCR mode config:', err);
+    console.log('[Background] Using default OCR mode:', OCR_MODE);
+  }
+}
+
+// 在扩展启动时加载配置
+loadOcrMode();
+// ========================================
+
+// ========================================
+// Offscreen Document 模式
+// ========================================
 let offscreenDocumentReady = false;
+let offscreenDocumentCreating = false;
 
 async function setupOffscreenDocument() {
   if (offscreenDocumentReady) return;
@@ -138,16 +173,82 @@ async function setupOffscreenDocument() {
     });
     offscreenDocumentReady = true;
     console.log('[Background] offscreen document created');
+
+    // 等待 offscreen 脚本加载
+    console.log('[Background] waiting for offscreen scripts to load...');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // 验证 offscreen document 是否真的可用
+    try {
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Offscreen ping timeout')), 3000);
+        chrome.runtime.sendMessage({ action: 'ping' }, (response) => {
+          clearTimeout(timeout);
+          if (chrome.runtime.lastError) {
+            console.warn('[Background] offscreen ping failed:', chrome.runtime.lastError.message);
+          } else {
+            console.log('[Background] offscreen ping success:', response);
+          }
+          resolve();
+        });
+      });
+    } catch (err) {
+      console.warn('[Background] offscreen verification failed:', err.message);
+    }
   } catch (err) {
     if (err.message && (err.message.includes('only be created') || err.message.includes('Only a single'))) {
       console.log('[Background] offscreen document already exists (create failed)');
       offscreenDocumentReady = true;
     } else {
+      console.error('[Background] failed to create offscreen document:', err);
       throw err;
     }
   } finally {
     offscreenDocumentCreating = false;
   }
+}
+
+// ========================================
+// Popup Window 模式
+// ========================================
+let ocrWindow = null;
+let ocrWindowReady = false;
+
+async function setupOcrWindow() {
+  if (ocrWindowReady && ocrWindow) {
+    console.log('[Background] OCR window already ready');
+    return;
+  }
+
+  console.log('[Background] creating OCR window...');
+
+  return new Promise((resolve, reject) => {
+    chrome.windows.create({
+      url: 'src/pages/ocr/ocr.html',
+      type: 'popup',
+      width: 1,
+      height: 1,
+      left: -1000,
+      top: -1000,
+      focused: false
+    }, (window) => {
+      if (chrome.runtime.lastError) {
+        console.error('[Background] failed to create OCR window:', chrome.runtime.lastError);
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+
+      ocrWindow = window;
+      console.log('[Background] OCR window created, id:', window.id);
+
+      // 等待窗口加载
+      setTimeout(() => {
+        ocrWindowReady = true;
+        console.log('[Background] OCR window ready');
+        resolve();
+      }, 2000);
+    });
+  });
 }
 
 function ensureContentScript() {
@@ -240,27 +341,239 @@ async function showResultInContentScript(text, error = null, type = '') {
     return;
   }
   const tabId = activeTabs[0].id;
+  console.log('[OCREngine] sending showOcrResult to tab:', tabId, 'url:', activeTabs[0].url);
   try {
-    await chrome.tabs.sendMessage(tabId, {
+    const response = await chrome.tabs.sendMessage(tabId, {
       action: 'showOcrResult',
       text,
       error,
       type,
-      title: type === 'full' ? '整页识别结果' : type === 'area' ? '框选识别结果' : 'OCR 识别结果'
+      title: type === 'full' ? '整页识别结果' : type === 'area' ? '框选识别结果' : type === 'container' ? '容器识别结果' : 'OCR 识别结果'
     });
-    console.log('[OCREngine] result panel shown in content script');
+    console.log('[OCREngine] result panel shown in content script, response:', response);
   } catch (err) {
     console.error('[OCREngine] showOcrResult failed:', err);
   }
 }
 
-async function recognize(images, lang) {
-  console.log('[OCREngine] recognize start (offscreen), images:', images.length, 'lang:', lang);
+// ========================================
+// PaddleOCR API（在 service worker 中执行，无跨域限制）
+// ========================================
+const PADDLEOCR_API_URL = 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs';
+
+async function recognizeWithPaddleOCRAPI(images, config) {
+  const token = config?.paddleOcrApiToken;
+  const model = config?.paddleOcrApiModel || 'PaddleOCR-VL-1.6';
+
+  if (!token) {
+    throw new Error('PaddleOCR API token 未设置，请在设置中配置');
+  }
+
+  console.log('[PaddleOCR API] Starting recognition, images:', images.length);
+
+  let allText = '';
+
+  for (let i = 0; i < images.length; i++) {
+    console.log(`[PaddleOCR API] Processing image ${i + 1}/${images.length}`);
+
+    // 将 data URL 转为 Blob
+    const response = await fetch(images[i]);
+    const blob = await response.blob();
+    console.log('[PaddleOCR API] Image blob size:', blob.size, 'bytes');
+
+    // 提交任务
+    const formData = new FormData();
+    formData.append('file', blob, 'image.png');
+    formData.append('model', model);
+    formData.append('optionalPayload', JSON.stringify({
+      useDocOrientationClassify: false,
+      useDocUnwarping: false,
+      useChartRecognition: false
+    }));
+
+    const submitRes = await fetch(PADDLEOCR_API_URL, {
+      method: 'POST',
+      headers: { 'Authorization': `bearer ${token}` },
+      body: formData
+    });
+
+    console.log('[PaddleOCR API] Submit response status:', submitRes.status);
+
+    if (!submitRes.ok) {
+      const errText = await submitRes.text();
+      console.error('[PaddleOCR API] Submit error:', errText);
+      throw new Error(`提交任务失败: ${submitRes.status} ${errText}`);
+    }
+
+    const submitData = await submitRes.json();
+    const jobId = submitData.data?.jobId;
+    if (!jobId) throw new Error('API 未返回 jobId');
+    console.log('[PaddleOCR API] Job submitted, jobId:', jobId);
+
+    // 轮询任务状态
+    let jsonlUrl = '';
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await new Promise(r => setTimeout(r, 5000));
+
+      const pollRes = await fetch(`${PADDLEOCR_API_URL}/${jobId}`, {
+        headers: { 'Authorization': `bearer ${token}` }
+      });
+
+      if (!pollRes.ok) throw new Error(`查询任务失败: ${pollRes.status}`);
+
+      const pollData = await pollRes.json();
+      const state = pollData.data?.state;
+      console.log(`[PaddleOCR API] Job state: ${state}`);
+
+      if (state === 'done') {
+        jsonlUrl = pollData.data?.resultUrl?.jsonUrl;
+        break;
+      } else if (state === 'failed') {
+        throw new Error(`任务失败: ${pollData.data?.errorMsg || '未知错误'}`);
+      }
+    }
+
+    if (!jsonlUrl) throw new Error('任务超时（5分钟）');
+
+    // 获取结果
+    console.log('[PaddleOCR API] Fetching result:', jsonlUrl);
+    const resultRes = await fetch(jsonlUrl);
+    if (!resultRes.ok) throw new Error(`获取结果失败: ${resultRes.status}`);
+
+    const jsonlText = await resultRes.text();
+    const lines = jsonlText.trim().split('\n');
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line);
+        for (const res of data.result?.layoutParsingResults || []) {
+          const md = res.markdown?.text;
+          if (md?.trim()) allText += (allText ? '\n' : '') + md.trim();
+        }
+      } catch (err) {
+        console.warn('[PaddleOCR API] Failed to parse line:', err);
+      }
+    }
+
+    console.log(`[PaddleOCR API] Image ${i + 1} done, text length:`, allText.length);
+  }
+
+  return allText.trim() || '(未识别到文字)';
+}
+async function recognize(images, lang, engine = 'tesseract', config = {}) {
+  console.log('[OCREngine] recognize start, engine:', engine, 'images:', images.length);
+
+  // PaddleOCR API 直接在 background 里执行（无跨域限制）
+  if (engine === 'paddleocr') {
+    return await recognizeWithPaddleOCRAPI(images, config);
+  }
+
+  // Tesseract 通过 popup/offscreen worker 执行
+  if (OCR_MODE === 'offscreen') {
+    return await recognizeWithOffscreen(images, lang, engine, config);
+  } else if (OCR_MODE === 'popup') {
+    return await recognizeWithPopup(images, lang, engine, config);
+  } else {
+    throw new Error('Invalid OCR_MODE: ' + OCR_MODE);
+  }
+}
+
+async function recognizeWithOffscreen(images, lang, engine, config) {
   await setupOffscreenDocument();
-  const res = await chrome.runtime.sendMessage({ action: 'recognizeImages', images, lang });
-  console.log('[OCREngine] recognize response:', res);
-  if (res?.error) throw new Error(res.error);
-  return res?.text || '(未识别到文字)';
+  console.log('[OCREngine] sending recognizeImages message to offscreen...');
+
+  try {
+    const res = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('OCR recognition timeout after 300 seconds'));
+      }, 300000); // PaddleOCR API 可能需要更长时间
+
+      let responded = false;
+
+      chrome.runtime.sendMessage(
+        {
+          action: 'recognizeImages',
+          images,
+          lang,
+          engine,
+          target: 'offscreen',
+          paddleOcrApiToken: config?.paddleOcrApiToken,
+          paddleOcrApiModel: config?.paddleOcrApiModel
+        },
+        (response) => {
+          if (responded) return;
+          responded = true;
+          clearTimeout(timeout);
+
+          if (chrome.runtime.lastError) {
+            console.error('[OCREngine] sendMessage lastError:', chrome.runtime.lastError);
+            reject(new Error(chrome.runtime.lastError.message));
+          } else {
+            console.log('[OCREngine] recognize response received:', response);
+            resolve(response);
+          }
+        }
+      );
+    });
+
+    console.log('[OCREngine] recognize response:', res);
+    if (res?.error) throw new Error(res.error);
+    return res?.text || '(未识别到文字)';
+  } catch (err) {
+    console.error('[OCREngine] recognizeWithOffscreen failed:', err);
+    throw err;
+  }
+}
+
+async function recognizeWithPopup(images, lang, engine, config) {
+  await setupOcrWindow();
+  console.log('[OCREngine] sending recognizeImages message to OCR window...');
+
+  try {
+    const tabs = await chrome.tabs.query({ windowId: ocrWindow.id });
+    if (!tabs || tabs.length === 0) {
+      throw new Error('OCR window has no tabs');
+    }
+
+    const ocrTabId = tabs[0].id;
+    console.log('[OCREngine] OCR tab id:', ocrTabId);
+
+    const res = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('OCR recognition timeout after 300 seconds'));
+      }, 300000); // PaddleOCR API 可能需要更长时间
+
+      chrome.tabs.sendMessage(
+        ocrTabId,
+        {
+          action: 'recognizeImages',
+          images,
+          lang,
+          engine,
+          paddleOcrApiToken: config?.paddleOcrApiToken,
+          paddleOcrApiModel: config?.paddleOcrApiModel
+        },
+        (response) => {
+          clearTimeout(timeout);
+          if (chrome.runtime.lastError) {
+            console.error('[OCREngine] sendMessage lastError:', chrome.runtime.lastError);
+            reject(new Error(chrome.runtime.lastError.message));
+          } else {
+            console.log('[OCREngine] recognize response received:', response);
+            resolve(response);
+          }
+        }
+      );
+    });
+
+    console.log('[OCREngine] recognize response:', res);
+    if (res?.error) throw new Error(res.error);
+    return res?.text || '(未识别到文字)';
+  } catch (err) {
+    console.error('[OCREngine] recognizeWithPopup failed:', err);
+    throw err;
+  }
 }
 
 async function captureSequence(captureArea = null, onProgress) {
@@ -361,7 +674,7 @@ async function runFullPageOcr(onProgress) {
   try {
     const { pieces, settings } = await captureSequence(null, onProgress);
     console.log('[OCREngine] start recognize, pieces:', pieces.length);
-    const text = await recognize(pieces, settings.lang);
+    const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings);
     console.log('[OCREngine] show result panel');
     await saveToHistory(text, 'full');
     await showResultInContentScript(text, null, 'full');
@@ -384,7 +697,7 @@ async function runAreaOcr(area, onProgress) {
   state.isCapturing = true;
   try {
     const { pieces, settings } = await captureSequence(area, onProgress);
-    const text = await recognize(pieces, settings.lang);
+    const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings);
     await saveToHistory(text, 'area');
     await showResultInContentScript(text, null, 'area');
     return text;
@@ -418,7 +731,7 @@ async function runContainerOcr(container, onProgress) {
     console.log('[OCREngine] will capture from Y=' + container.y + ' to Y=' + (container.y + containerHeight));
 
     const { pieces, settings } = await captureSequence(captureArea, onProgress);
-    const text = await recognize(pieces, settings.lang);
+    const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings);
     await saveToHistory(text, 'container');
     await showResultInContentScript(text, null, 'container');
     return text;
@@ -548,6 +861,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+
+  // 对于未处理的消息（如 recognizeImages），返回 false 让其传递到其他监听器（offscreen document）
+  console.log('[Background] message not handled, passing through:', request.action);
+  return false;
 });
 
 chrome.action.onClicked.addListener((tab) => {
@@ -567,7 +884,9 @@ chrome.storage.local.get(['ocrHistory']).then(async (legacyHistory) => {
   }
 });
 
-initConfig().then(() => {
+// 初始化配置和 OCR 模式
+Promise.all([initConfig(), loadOcrMode()]).then(() => {
+  console.log('[Background] OCR mode:', OCR_MODE);
   console.log('[Background] initialization complete');
 });
 

@@ -1,5 +1,8 @@
 {
-  "lang": "chi_sim",
+  "lang": "chi_sim_best",
   "delay": 300,
-  "historyLimit": 50
+  "historyLimit": 50,
+  "ocrEngine": "tesseract",
+  "paddleOcrApiToken": "",
+  "paddleOcrApiModel": "PaddleOCR-VL-1.6"
 }

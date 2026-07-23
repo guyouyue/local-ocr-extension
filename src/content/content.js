@@ -1157,6 +1157,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
+  if (request.action === 'updateStatus') {
+    showStatus(request.text);
+    sendResponse({ ok: true });
+    return true;
+  }
   if (request.action === 'getPageMetrics') {
     try {
       const metrics = getPageMetrics(request.captureArea);

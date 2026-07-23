@@ -366,7 +366,7 @@ async function showResultInContentScript(text, error = null, type = '', tabId = 
 // ========================================
 const PADDLEOCR_API_URL = 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs';
 
-async function recognizeWithPaddleOCRAPI(images, config) {
+async function recognizeWithPaddleOCRAPI(images, config, onProgress) {
   const token = config?.paddleOcrApiToken;
   const model = config?.paddleOcrApiModel || 'PaddleOCR-VL-1.6';
 
@@ -380,6 +380,11 @@ async function recognizeWithPaddleOCRAPI(images, config) {
 
   for (let i = 0; i < images.length; i++) {
     console.log(`[PaddleOCR API] Processing image ${i + 1}/${images.length}`);
+
+    // 通知进度
+    if (onProgress) {
+      onProgress({ status: `正在识别 ${i + 1}/${images.length}`, progress: i / images.length });
+    }
 
     // 将 data URL 转为 Blob
     const response = await fetch(images[i]);
@@ -466,15 +471,18 @@ async function recognizeWithPaddleOCRAPI(images, config) {
 
   return allText.trim() || '(未识别到文字)';
 }
-async function recognize(images, lang, engine = 'tesseract', config = {}) {
+async function recognize(images, lang, engine = 'tesseract', config = {}, onProgress) {
   console.log('[OCREngine] recognize start, engine:', engine, 'images:', images.length);
 
-  // PaddleOCR API 直接在 background 里执行（无跨域限制）
   if (engine === 'paddleocr') {
-    return await recognizeWithPaddleOCRAPI(images, config);
+    return await recognizeWithPaddleOCRAPI(images, config, onProgress);
   }
 
-  // Tesseract 通过 popup/offscreen worker 执行
+  // Tesseract 是单次发送全部图片，进度提示只在开始时显示
+  if (onProgress && images.length > 1) {
+    onProgress({ status: `正在识别 0/${images.length}`, progress: 0 });
+  }
+
   if (OCR_MODE === 'offscreen') {
     return await recognizeWithOffscreen(images, lang, engine, config);
   } else if (OCR_MODE === 'popup') {
@@ -761,7 +769,13 @@ async function runFullPageOcr(onProgress) {
   try {
     const { pieces, settings, tabId } = await captureSequence(null, onProgress);
     console.log('[OCREngine] start recognize, pieces:', pieces.length);
-    const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings);
+    const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings, (progress) => {
+      // 识别进度回调
+      chrome.tabs.sendMessage(tabId, {
+        action: 'updateStatus',
+        text: progress.status
+      }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
+    });
     console.log('[OCREngine] show result panel');
     await saveToHistory(text, 'full');
     await showResultInContentScript(text, null, 'full', tabId);
@@ -784,7 +798,12 @@ async function runAreaOcr(area, onProgress) {
   state.isCapturing = true;
   try {
     const { pieces, settings, tabId } = await captureSequence(area, onProgress);
-    const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings);
+    const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings, (progress) => {
+      chrome.tabs.sendMessage(tabId, {
+        action: 'updateStatus',
+        text: progress.status
+      }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
+    });
     await saveToHistory(text, 'area');
     await showResultInContentScript(text, null, 'area', tabId);
     return text;
@@ -831,7 +850,12 @@ async function runContainerOcr(container, onProgress) {
     console.log('[OCREngine] will capture from Y=' + captureArea.y + ' to Y=' + (captureArea.y + containerHeight));
 
     const { pieces, settings, tabId } = await captureSequence(captureArea, onProgress);
-    const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings);
+    const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings, (progress) => {
+      chrome.tabs.sendMessage(tabId, {
+        action: 'updateStatus',
+        text: progress.status
+      }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
+    });
     await saveToHistory(text, 'container');
     await showResultInContentScript(text, null, 'container', tabId);
     return text;

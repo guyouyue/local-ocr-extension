@@ -333,15 +333,20 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function showResultInContentScript(text, error = null, type = '') {
-  console.log('[OCREngine] showing result in content script, text length:', text?.length, 'error:', error);
-  const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!activeTabs.length) {
-    console.error('[OCREngine] no active tab');
-    return;
+async function showResultInContentScript(text, error = null, type = '', tabId = null) {
+  console.log('[OCREngine] showing result in content script, text length:', text?.length, 'error:', error, 'tabId:', tabId);
+
+  // 如果没有传入 tabId，尝试查询 active tab（兼容旧代码）
+  if (!tabId) {
+    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!activeTabs.length) {
+      console.error('[OCREngine] no active tab and no tabId provided');
+      return;
+    }
+    tabId = activeTabs[0].id;
   }
-  const tabId = activeTabs[0].id;
-  console.log('[OCREngine] sending showOcrResult to tab:', tabId, 'url:', activeTabs[0].url);
+
+  console.log('[OCREngine] sending showOcrResult to tab:', tabId);
   try {
     const response = await chrome.tabs.sendMessage(tabId, {
       action: 'showOcrResult',
@@ -601,15 +606,67 @@ async function captureSequence(captureArea = null, onProgress) {
   const pieces = [];
 
   // 确定截取范围
+  const isFixed = captureArea?.isFixed;
   const startY = captureArea ? captureArea.y : 0;
   const endY = captureArea ? (captureArea.y + captureArea.height) : m.totalHeight;
+  const captureHeight = endY - startY;
 
-  console.log('[OCREngine] capture loop starting, startY:', startY, 'endY:', endY, 'viewportHeight:', m.viewportHeight, 'totalHeight:', m.totalHeight);
+  console.log('[OCREngine] capture loop starting, isFixed:', isFixed, 'startY:', startY, 'endY:', endY, 'captureHeight:', captureHeight, 'viewportHeight:', m.viewportHeight, 'totalHeight:', m.totalHeight);
+
+  // 隐藏固定定位元素，避免遮挡截图内容
+  const [hideResult] = await sendToActiveTab({ action: 'hideFixedElements' });
+  console.log('[OCREngine] hideFixedElements result:', hideResult);
+
   let loopCount = 0;
+  let capturedContentTop = startY;
+
+  try {
+
+  // fixed 元素只需要截一次，不滚动
+  if (isFixed) {
+    loopCount = 1;
+    console.log(`[OCREngine] fixed element: single screenshot at scroll offset 0`);
+
+    const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+    console.log('[OCREngine] captured screenshot length:', dataUrl?.length);
+
+    const [cropResult] = await sendToActiveTab({
+      action: 'cropScreenshot',
+      dataUrl,
+      offsetY: 0,  // 当前滚动位置为 0（保持原位）
+      metrics: m,
+      captureArea,
+      capturedContentTop: startY
+    });
+    console.log('[OCREngine] crop result:', cropResult ? 'got' : 'null', cropResult?.result ? 'data url length ' + cropResult.result.length : 'no result');
+
+    if (cropResult && cropResult.result) {
+      pieces.push(cropResult.result);
+
+      // DEBUG: 保存截图到临时文件夹
+      // try {
+      //   const timestamp = Date.now();
+      //   const filename = `capture_loop1_fixed_offsetY${Math.round(startY)}_${timestamp}.png`;
+      //   await new Promise((res) => {
+      //     chrome.downloads.download({
+      //       url: cropResult.result,
+      //       filename: `temp/${filename}`,
+      //       saveAs: false
+      //     }, (downloadId) => {
+      //       console.log(`[OCREngine DEBUG] saved: temp/${filename} downloadId:${downloadId} lastError:${chrome.runtime.lastError?.message}`);
+      //       res();
+      //     });
+      //   });
+      // } catch (err) {
+      //   console.error('[OCREngine DEBUG] failed to save temp image:', err);
+      // }
+    }
+  } else {
+    // 普通元素：滚动截图
   for (let y = startY; y < endY; y += m.viewportHeight) {
     loopCount++;
     const offset = Math.min(y, Math.max(0, endY - m.viewportHeight));
-    console.log(`[OCREngine] loop ${loopCount}: y=${y}, offset=${offset}, viewportHeight=${m.viewportHeight}, totalHeight=${m.totalHeight}`);
+    console.log(`[OCREngine] loop ${loopCount}: y=${y}, offset=${offset}, capturedTop=${capturedContentTop}, viewportHeight=${m.viewportHeight}`);
     console.log('[OCREngine] scrolling to', offset);
     await sendToActiveTab({ action: 'scrollToY', y: offset });
     await sleep(Math.max(settings.delay, 1200));
@@ -638,13 +695,37 @@ async function captureSequence(captureArea = null, onProgress) {
       dataUrl,
       offsetY: offset,
       metrics: m,
-      captureArea
+      captureArea,
+      capturedContentTop // 传递已捕获内容的顶部位置
     });
     console.log('[OCREngine] crop result:', cropResult ? 'got' : 'null', cropResult?.result ? 'data url length ' + cropResult.result.length : 'no result');
 
     if (cropResult && cropResult.result) {
       pieces.push(cropResult.result);
-      if (onProgress) onProgress({ status: `已截取 ${pieces.length} 段`, progress: offset / m.totalHeight });
+
+      // DEBUG: 保存截图到临时文件夹
+      // try {
+      //   const timestamp = Date.now();
+      //   const filename = `capture_loop${loopCount}_offset${Math.round(offset)}_capturedTop${Math.round(capturedContentTop)}_${timestamp}.png`;
+      //   await new Promise((res) => {
+      //     chrome.downloads.download({
+      //       url: cropResult.result,
+      //       filename: `temp/${filename}`,
+      //       saveAs: false
+      //     }, (downloadId) => {
+      //       console.log(`[OCREngine DEBUG] saved: temp/${filename} downloadId:${downloadId} lastError:${chrome.runtime.lastError?.message}`);
+      //       res();
+      //     });
+      //   });
+      // } catch (err) {
+      //   console.error('[OCREngine DEBUG] failed to save temp image:', err);
+      // }
+
+      // 更新已捕获内容的顶部位置
+      const capturedInThisLoop = Math.min(offset + m.viewportHeight, endY) - capturedContentTop;
+      capturedContentTop += capturedInThisLoop;
+      console.log(`[OCREngine] captured ${capturedInThisLoop}px in this loop, capturedContentTop now at ${capturedContentTop}`);
+      if (onProgress) onProgress({ status: `已截取 ${pieces.length} 段`, progress: (capturedContentTop - startY) / captureHeight });
     } else if (cropResult && cropResult.error) {
       console.error('[OCREngine] crop error:', cropResult.error);
       throw new Error(cropResult.error);
@@ -657,11 +738,17 @@ async function captureSequence(captureArea = null, onProgress) {
       break;
     }
   }
+  } // end else (normal element)
+  } finally {
+    // 恢复固定定位元素
+    console.log('[OCREngine] restoring fixed elements');
+    await sendToActiveTab({ action: 'restoreFixedElements' });
+  }
 
   console.log('[OCREngine] scroll back to top');
   await sendToActiveTab({ action: 'scrollToY', y: 0 });
   console.log('[OCREngine] captureSequence done, pieces:', pieces.length);
-  return { pieces, metrics: m, settings };
+  return { pieces, metrics: m, settings, tabId: targetTab.id };
 }
 
 async function runFullPageOcr(onProgress) {
@@ -672,12 +759,12 @@ async function runFullPageOcr(onProgress) {
   }
   state.isCapturing = true;
   try {
-    const { pieces, settings } = await captureSequence(null, onProgress);
+    const { pieces, settings, tabId } = await captureSequence(null, onProgress);
     console.log('[OCREngine] start recognize, pieces:', pieces.length);
     const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings);
     console.log('[OCREngine] show result panel');
     await saveToHistory(text, 'full');
-    await showResultInContentScript(text, null, 'full');
+    await showResultInContentScript(text, null, 'full', tabId);
     return text;
   } catch (err) {
     console.error('[OCREngine] runFullPageOcr error:', err);
@@ -696,10 +783,10 @@ async function runAreaOcr(area, onProgress) {
   }
   state.isCapturing = true;
   try {
-    const { pieces, settings } = await captureSequence(area, onProgress);
+    const { pieces, settings, tabId } = await captureSequence(area, onProgress);
     const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings);
     await saveToHistory(text, 'area');
-    await showResultInContentScript(text, null, 'area');
+    await showResultInContentScript(text, null, 'area', tabId);
     return text;
   } catch (err) {
     console.error('[OCREngine] runAreaOcr error:', err);
@@ -712,28 +799,41 @@ async function runAreaOcr(area, onProgress) {
 
 async function runContainerOcr(container, onProgress) {
   console.log('[OCREngine] runContainerOcr called, container:', container);
+  console.log('[OCREngine] container.isFixed =', container.isFixed, 'typeof =', typeof container.isFixed);
   if (state.isCapturing) {
     console.warn('[OCREngine] already capturing, skip');
     return;
   }
   state.isCapturing = true;
   try {
-    // 容器识别：需要截取从容器顶部到底部的完整内容
-    // captureArea 应该覆盖整个容器在页面中的范围
     const containerHeight = container.scrollHeight || container.height;
-    const captureArea = {
-      x: container.x,
-      y: container.y,
-      width: container.width,
-      height: containerHeight
-    };
-    console.log('[OCREngine] container capture area:', captureArea);
-    console.log('[OCREngine] will capture from Y=' + container.y + ' to Y=' + (container.y + containerHeight));
 
-    const { pieces, settings } = await captureSequence(captureArea, onProgress);
+    let captureArea;
+    if (container.isFixed) {
+      // fixed 定位容器：y 是视口坐标，截图不需要滚动，直接用视口坐标裁剪
+      // 将视口坐标转为文档坐标（截图时 offset=0）
+      captureArea = {
+        x: container.x,
+        y: container.y,      // 视口坐标，等同于文档坐标（因为不滚动）
+        width: container.width,
+        height: containerHeight,
+        isFixed: true
+      };
+    } else {
+      captureArea = {
+        x: container.x,
+        y: container.y,
+        width: container.width,
+        height: containerHeight
+      };
+    }
+    console.log('[OCREngine] container capture area:', captureArea);
+    console.log('[OCREngine] will capture from Y=' + captureArea.y + ' to Y=' + (captureArea.y + containerHeight));
+
+    const { pieces, settings, tabId } = await captureSequence(captureArea, onProgress);
     const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings);
     await saveToHistory(text, 'container');
-    await showResultInContentScript(text, null, 'container');
+    await showResultInContentScript(text, null, 'container', tabId);
     return text;
   } catch (err) {
     console.error('[OCREngine] runContainerOcr error:', err);

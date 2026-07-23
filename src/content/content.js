@@ -789,37 +789,63 @@ function startContainerSelection() {
     const scrollX = window.scrollX || window.pageXOffset;
     const scrollY = window.scrollY || window.pageYOffset;
 
-    // 计算容器在整个文档中的绝对位置
-    const containerX = rect.left + scrollX;
-    const containerY = rect.top + scrollY;
+    const computedStyle = window.getComputedStyle(currentElement);
+    const position = computedStyle.position;
+    const isFixed = position === 'fixed';
+
+    // fixed 元素的 rect 坐标是相对于视口的，不需要加 scroll
+    const containerX = isFixed ? rect.left : rect.left + scrollX;
+    const containerY = isFixed ? rect.top : rect.top + scrollY;
     const containerWidth = rect.width;
 
-    // 获取容器的真实高度：优先使用 scrollHeight，否则使用 rect.height
+    // 获取容器的真实高度
     const scrollHeight = currentElement.scrollHeight;
     const offsetHeight = currentElement.offsetHeight;
     const clientHeight = currentElement.clientHeight;
     const rectHeight = rect.height;
 
-    // 使用最大的高度值
-    const containerHeight = Math.max(scrollHeight, offsetHeight, rectHeight);
-    const hasScroll = scrollHeight > clientHeight;
+    // 判断是否有内部滚动内容
+    const hasScrollContent = scrollHeight > clientHeight + 1; // +1 容忍1px误差
+
+    // 如果有滚动内容，使用 scrollHeight（完整内容高度）
+    // 否则使用 rect.height（避免 DPR 导致的 scrollHeight 翻倍问题）
+    const containerHeight = hasScrollContent ? Math.max(scrollHeight, offsetHeight, rectHeight) : rectHeight;
 
     console.log('[Content] container selected:', {
       element: currentElement.tagName,
       className: currentElement.className,
+      position,
+      isFixed,
       x: containerX,
       y: containerY,
       width: containerWidth,
       'rect.height': rectHeight,
+      'rect.top': rect.top,
+      'rect.left': rect.left,
+      scrollX,
+      scrollY,
       offsetHeight,
       clientHeight,
       scrollHeight,
       'containerHeight(max)': containerHeight,
-      hasScroll
+      hasScrollContent
+    });
+
+    console.log('[Content] will send container:', {
+      x: containerX,
+      y: containerY,
+      width: containerWidth,
+      height: containerHeight,
+      scrollHeight: containerHeight,
+      element: currentElement.tagName,
+      isFixed,
+      position
     });
 
     try {
       showStatus('正在识别容器内容…');
+      // 保存目标元素到全局，供 hideFixedElementsExcept 使用
+      window.__ocrTargetElement = currentElement;
       const res = await chrome.runtime.sendMessage({
         action: 'startContainerOcr',
         container: {
@@ -828,12 +854,15 @@ function startContainerSelection() {
           width: containerWidth,
           height: containerHeight,
           scrollHeight: containerHeight,
-          element: currentElement.tagName
+          element: currentElement.tagName,
+          isFixed
         }
       });
       console.log('[Content] startContainerOcr response:', res);
+      window.__ocrTargetElement = null; // 清理
     } catch (err) {
       console.error('[Content] startContainerOcr failed:', err);
+      window.__ocrTargetElement = null; // 清理
       hideStatus();
       showResultInPanel(`错误：${err.message}`, '识别失败');
     }
@@ -894,13 +923,73 @@ function getPageMetrics(captureArea = null) {
   return metrics;
 }
 
+// 临时隐藏可能遮挡目标容器的固定定位元素
+function hideFixedElementsExcept(targetElement) {
+  const elements = [];
+  const allElements = document.querySelectorAll('*');
+
+  // 检查目标元素是否是某个元素的子孙
+  function isDescendantOf(child, parent) {
+    let node = child;
+    while (node) {
+      if (node === parent) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  // 检查某个元素是否是目标元素的祖先或自身
+  function isTargetOrAncestor(el) {
+    if (!targetElement) return false;
+    return el === targetElement || isDescendantOf(targetElement, el);
+  }
+
+  for (const el of allElements) {
+    const style = window.getComputedStyle(el);
+    const position = style.position;
+
+    // 只处理固定/粘性定位元素
+    if (position === 'fixed' || position === 'sticky') {
+      // 排除插件自己的 UI 元素（id 以 kst-ocr- 开头）
+      if (el.id && el.id.startsWith('kst-ocr-')) {
+        console.log('[Content] keeping fixed element (plugin UI):', el.id);
+        continue;
+      }
+
+      // 如果是目标容器本身、目标容器的祖先、或目标容器的子孙，不隐藏
+      if (isTargetOrAncestor(el) || isDescendantOf(el, targetElement)) {
+        console.log('[Content] keeping fixed element (target related):', el.tagName, el.className);
+        continue;
+      }
+
+      // 其他固定元素都隐藏
+      elements.push({
+        element: el,
+        originalVisibility: el.style.visibility
+      });
+      el.style.setProperty('visibility', 'hidden', 'important');
+    }
+  }
+
+  console.log('[Content] hideFixedElementsExcept: hidden', elements.length, 'elements, kept target and its ancestors/descendants');
+  return elements;
+}
+
+// 恢复固定定位元素
+function restoreFixedElements(hiddenElements) {
+  for (const item of hiddenElements) {
+    item.element.style.visibility = item.originalVisibility;
+  }
+  console.log('[Content] restoreFixedElements: restored', hiddenElements.length, 'elements');
+}
+
 function scrollToY(y) {
   console.log('[Content] scrollToY:', y);
   window.scrollTo(0, y);
 }
 
-function cropScreenshot(dataUrl, offsetY, metrics, captureArea) {
-  console.log('[Content] cropScreenshot called, dataUrl length:', dataUrl?.length, 'offsetY:', offsetY, 'captureArea:', captureArea);
+function cropScreenshot(dataUrl, offsetY, metrics, captureArea, capturedContentTop) {
+  console.log('[Content] cropScreenshot called, dataUrl length:', dataUrl?.length, 'offsetY:', offsetY, 'capturedContentTop:', capturedContentTop, 'captureArea:', captureArea);
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -923,9 +1012,11 @@ function cropScreenshot(dataUrl, offsetY, metrics, captureArea) {
         const aw = captureArea.width * dpr;
         const ah = captureArea.height * dpr;
         const offsetYPx = offsetY * dpr;
+        const capturedTopPx = (capturedContentTop !== undefined ? capturedContentTop : ay) * dpr;
 
         // 容器在页面中的范围：[ay, ay + ah]
         // 当前视口的范围：[offsetYPx, offsetYPx + vpH]
+        // 已捕获内容的顶部：capturedTopPx
 
         const containerTop = ay;
         const containerBottom = ay + ah;
@@ -938,23 +1029,24 @@ function cropScreenshot(dataUrl, offsetY, metrics, captureArea) {
           return resolve(null);
         }
 
-        // 计算容器在当前视口中的可见部分
-        const visibleTop = Math.max(containerTop, viewportTop);
-        const visibleBottom = Math.min(containerBottom, viewportBottom);
+        // 计算需要裁剪的部分：从已捕获内容的底部开始，到容器底部或视口底部
+        const cropTop = Math.max(capturedTopPx, viewportTop);
+        const cropBottom = Math.min(containerBottom, viewportBottom);
 
         // 转换为相对于当前视口的坐标
         srcX = ax;
-        srcY = visibleTop - viewportTop;
+        srcY = cropTop - viewportTop;
         srcW = aw;
-        srcH = visibleBottom - visibleTop;
+        srcH = cropBottom - cropTop;
 
         console.log('[Content] crop calculation:', {
-          containerTop,
-          containerBottom,
-          viewportTop,
-          viewportBottom,
-          visibleTop,
-          visibleBottom,
+          containerTop: containerTop / dpr,
+          containerBottom: containerBottom / dpr,
+          viewportTop: viewportTop / dpr,
+          viewportBottom: viewportBottom / dpr,
+          capturedTop: capturedTopPx / dpr,
+          cropTop: cropTop / dpr,
+          cropBottom: cropBottom / dpr,
           srcX: srcX / dpr,
           srcY: srcY / dpr,
           srcW: srcW / dpr,
@@ -1076,6 +1168,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     return true;
   }
+  if (request.action === 'hideFixedElements') {
+    try {
+      const targetElement = window.__ocrTargetElement || null;
+      const hiddenElements = hideFixedElementsExcept(targetElement);
+      window.__ocrHiddenElements = hiddenElements;
+      sendResponse({ ok: true, count: hiddenElements.length });
+    } catch (err) {
+      console.error('[Content] hideFixedElements error:', err);
+      sendResponse({ error: errorToString(err) });
+    }
+    return true;
+  }
+  if (request.action === 'restoreFixedElements') {
+    try {
+      const hiddenElements = window.__ocrHiddenElements || [];
+      restoreFixedElements(hiddenElements);
+      window.__ocrHiddenElements = null;
+      sendResponse({ ok: true });
+    } catch (err) {
+      console.error('[Content] restoreFixedElements error:', err);
+      sendResponse({ error: errorToString(err) });
+    }
+    return true;
+  }
   if (request.action === 'scrollToY') {
     try {
       scrollToY(request.y);
@@ -1087,7 +1203,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   if (request.action === 'cropScreenshot') {
-    cropScreenshot(request.dataUrl, request.offsetY, request.metrics, request.captureArea)
+    cropScreenshot(request.dataUrl, request.offsetY, request.metrics, request.captureArea, request.capturedContentTop)
       .then((res) => {
         console.log('[Content] cropScreenshot resolved:', res ? (res.length ? 'data url length ' + res.length : res) : 'null');
         sendResponse(res);

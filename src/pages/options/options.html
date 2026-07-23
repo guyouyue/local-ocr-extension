@@ -64,6 +64,31 @@
       <input id="historyLimit" type="number" value="50" min="1" max="500" step="1">
     </label>
 
+    <div style="padding: 12px; background: #fff8e1; border-radius: 6px; margin-bottom: 15px; border-left: 4px solid #f9a825;">
+      <h3 style="margin: 0 0 8px 0; font-size: 14px; color: #e65100;">📖 连页模式（自动翻页识别）</h3>
+      <label style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px; cursor: pointer;">
+        <input id="continuousPageMode" type="checkbox">
+        <span style="font-size: 14px; font-weight: 500;">启用连页模式</span>
+      </label>
+      <label style="margin-bottom: 8px;">
+        最大连页数量
+        <input id="maxContinuousPages" type="number" value="20" min="1" max="200" step="1" style="width: 80px;">
+        <small style="display: inline; margin-left: 5px; color: #666;">（防止无限翻页）</small>
+      </label>
+      <label style="margin-bottom: 8px;">
+        跳页等待时间（毫秒）
+        <input id="pageFlipDelay" type="number" value="2000" min="500" max="10000" step="500" style="width: 80px;">
+        <small style="display: inline; margin-left: 5px; color: #666;">（点击下一页后等待页面加载的时间）</small>
+      </label>
+      <label style="display: flex; align-items: center; gap: 10px; margin-top: 4px; cursor: pointer;">
+        <input id="saveDebugScreenshots" type="checkbox">
+        <span style="font-size: 14px;">保存调试截图（开启后每次 OCR 截图将自动下载到本地 temp/ 目录）</span>
+      </label>
+      <p style="margin: 0; font-size: 12px; color: #666; line-height: 1.5;">
+        开启后，OCR 完成当前页后会自动查找并点击"下一页"按钮，继续识别下一页内容，直到无法翻页或达到最大页数为止。适用于有分页的内容（如小说章节、文档翻页等）。所有分页内容将合并到同一条历史记录中。
+      </p>
+    </div>
+
     <div class="section">
       <h2>历史记录管理</h2>
       <div class="storage-info">

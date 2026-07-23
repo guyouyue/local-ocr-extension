@@ -4,5 +4,9 @@
   "historyLimit": 50,
   "ocrEngine": "tesseract",
   "paddleOcrApiToken": "",
-  "paddleOcrApiModel": "PaddleOCR-VL-1.6"
+  "paddleOcrApiModel": "PaddleOCR-VL-1.6",
+  "continuousPageMode": false,
+  "maxContinuousPages": 20,
+  "pageFlipDelay": 2000,
+  "saveDebugScreenshots": false
 }

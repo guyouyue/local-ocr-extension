@@ -1,6 +1,6 @@
 console.log('[Background] background.js start');
 
-const state = { isCapturing: false };
+const state = { isCapturing: false, abortRequested: false };
 
 const DEFAULT_CONFIG = {
   lang: 'chi_sim',
@@ -333,6 +333,73 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// 等待指定 tab 页面加载完成，并确保 content script 可用
+async function waitForTabReady(tabId, timeout = 15000) {
+  console.log('[OCREngine] waitForTabReady, tabId:', tabId);
+
+  // 等待 tab 状态变为 complete
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      console.warn('[OCREngine] waitForTabReady: tab load timeout, proceeding anyway');
+      resolve();
+    }, timeout);
+
+    function listener(updatedTabId, changeInfo) {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        console.log('[OCREngine] waitForTabReady: tab status complete');
+        resolve();
+      }
+    }
+
+    // 先检查当前状态，如果已经 complete 则直接 resolve
+    chrome.tabs.get(tabId, (tab) => {
+      if (chrome.runtime.lastError) {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (tab.status === 'complete') {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        console.log('[OCREngine] waitForTabReady: tab already complete');
+        resolve();
+        return;
+      }
+      chrome.tabs.onUpdated.addListener(listener);
+    });
+  });
+
+  // 额外等待一小段时间让页面 JS 和 content script 初始化
+  await sleep(800);
+
+  // 注入 content script（如果还没有）
+  await new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, { action: 'ping' }, (res) => {
+      if (chrome.runtime.lastError || !res) {
+        console.log('[OCREngine] waitForTabReady: injecting content script');
+        chrome.scripting.executeScript(
+          { target: { tabId }, files: ['content.js'] },
+          () => {
+            if (chrome.runtime.lastError) {
+              console.error('[OCREngine] waitForTabReady: inject failed:', chrome.runtime.lastError.message);
+            }
+            setTimeout(resolve, 300);
+          }
+        );
+      } else {
+        console.log('[OCREngine] waitForTabReady: content script already active');
+        resolve();
+      }
+    });
+  });
+
+  console.log('[OCREngine] waitForTabReady done');
+}
+
 async function showResultInContentScript(text, error = null, type = '', tabId = null) {
   console.log('[OCREngine] showing result in content script, text length:', text?.length, 'error:', error, 'tabId:', tabId);
 
@@ -651,27 +718,25 @@ async function captureSequence(captureArea = null, onProgress) {
     if (cropResult && cropResult.result) {
       pieces.push(cropResult.result);
 
-      // DEBUG: 保存截图到临时文件夹
-      // try {
-      //   const timestamp = Date.now();
-      //   const filename = `capture_loop1_fixed_offsetY${Math.round(startY)}_${timestamp}.png`;
-      //   await new Promise((res) => {
-      //     chrome.downloads.download({
-      //       url: cropResult.result,
-      //       filename: `temp/${filename}`,
-      //       saveAs: false
-      //     }, (downloadId) => {
-      //       console.log(`[OCREngine DEBUG] saved: temp/${filename} downloadId:${downloadId} lastError:${chrome.runtime.lastError?.message}`);
-      //       res();
-      //     });
-      //   });
-      // } catch (err) {
-      //   console.error('[OCREngine DEBUG] failed to save temp image:', err);
-      // }
+      if (settings.saveDebugScreenshots) {
+        const timestamp = Date.now();
+        const filename = `capture_loop1_fixed_offsetY${Math.round(startY)}_${timestamp}.png`;
+        chrome.downloads.download({
+          url: cropResult.result,
+          filename: `temp/${filename}`,
+          saveAs: false
+        }, (downloadId) => {
+          console.log(`[OCREngine DEBUG] saved: temp/${filename} downloadId:${downloadId} lastError:${chrome.runtime.lastError?.message}`);
+        });
+      }
     }
   } else {
     // 普通元素：滚动截图
   for (let y = startY; y < endY; y += m.viewportHeight) {
+    if (state.abortRequested) {
+      console.log('[OCREngine] abort requested, stopping capture loop');
+      break;
+    }
     loopCount++;
     const offset = Math.min(y, Math.max(0, endY - m.viewportHeight));
     console.log(`[OCREngine] loop ${loopCount}: y=${y}, offset=${offset}, capturedTop=${capturedContentTop}, viewportHeight=${m.viewportHeight}`);
@@ -711,23 +776,17 @@ async function captureSequence(captureArea = null, onProgress) {
     if (cropResult && cropResult.result) {
       pieces.push(cropResult.result);
 
-      // DEBUG: 保存截图到临时文件夹
-      // try {
-      //   const timestamp = Date.now();
-      //   const filename = `capture_loop${loopCount}_offset${Math.round(offset)}_capturedTop${Math.round(capturedContentTop)}_${timestamp}.png`;
-      //   await new Promise((res) => {
-      //     chrome.downloads.download({
-      //       url: cropResult.result,
-      //       filename: `temp/${filename}`,
-      //       saveAs: false
-      //     }, (downloadId) => {
-      //       console.log(`[OCREngine DEBUG] saved: temp/${filename} downloadId:${downloadId} lastError:${chrome.runtime.lastError?.message}`);
-      //       res();
-      //     });
-      //   });
-      // } catch (err) {
-      //   console.error('[OCREngine DEBUG] failed to save temp image:', err);
-      // }
+      if (settings.saveDebugScreenshots) {
+        const timestamp = Date.now();
+        const filename = `capture_loop${loopCount}_offset${Math.round(offset)}_capturedTop${Math.round(capturedContentTop)}_${timestamp}.png`;
+        chrome.downloads.download({
+          url: cropResult.result,
+          filename: `temp/${filename}`,
+          saveAs: false
+        }, (downloadId) => {
+          console.log(`[OCREngine DEBUG] saved: temp/${filename} downloadId:${downloadId} lastError:${chrome.runtime.lastError?.message}`);
+        });
+      }
 
       // 更新已捕获内容的顶部位置
       const capturedInThisLoop = Math.min(offset + m.viewportHeight, endY) - capturedContentTop;
@@ -766,23 +825,93 @@ async function runFullPageOcr(onProgress) {
     return;
   }
   state.isCapturing = true;
+  state.abortRequested = false;
+  let targetTabId = null;
+
   try {
-    const { pieces, settings, tabId } = await captureSequence(null, onProgress);
-    console.log('[OCREngine] start recognize, pieces:', pieces.length);
-    const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings, (progress) => {
-      // 识别进度回调
-      chrome.tabs.sendMessage(tabId, {
+    const config = await getConfig();
+    const continuousPageMode = config.continuousPageMode || false;
+    const maxPages = config.maxContinuousPages || 20;
+    console.log('[OCREngine] continuousPageMode:', continuousPageMode, 'maxPages:', maxPages);
+
+    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!activeTabs.length) throw new Error('没有活动标签页');
+    targetTabId = activeTabs[0].id;
+
+    let allPieces = [];
+    let pageCount = 0;
+
+    do {
+      pageCount++;
+      console.log(`[OCREngine] processing page ${pageCount}`);
+
+      const { pieces } = await captureSequence(null, onProgress);
+      console.log(`[OCREngine] page ${pageCount} captured, pieces:`, pieces.length);
+      allPieces.push(...pieces);
+
+      if (state.abortRequested) {
+        console.log('[OCREngine] abort requested, stopping full page loop');
+        break;
+      }
+
+      if (!continuousPageMode) break;
+
+      const findResult = await chrome.tabs.sendMessage(targetTabId, { action: 'findNextPage' });
+      if (!findResult || !findResult.found) {
+        console.log('[OCREngine] no next page button found, stopping');
+        await chrome.tabs.sendMessage(targetTabId, {
+          action: 'updateStatus',
+          text: `已完成 ${pageCount} 页截图，开始识别...`
+        }).catch(() => {});
+        break;
+      }
+
+      await chrome.tabs.sendMessage(targetTabId, {
         action: 'updateStatus',
-        text: progress.status
-      }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
+        text: `正在翻页到第 ${pageCount + 1} 页...`
+      }).catch(() => {});
+
+      const clickResult = await chrome.tabs.sendMessage(targetTabId, { action: 'clickNextPage' });
+      if (!clickResult || !clickResult.ok) break;
+
+      console.log('[OCREngine] waiting for page to load...');
+      const flipSettings = await getConfig();
+      await waitForTabReady(targetTabId, 15000);
+      if (flipSettings.pageFlipDelay > 800) {
+        await sleep(flipSettings.pageFlipDelay - 800);
+      }
+
+      if (pageCount >= maxPages) {
+        await chrome.tabs.sendMessage(targetTabId, {
+          action: 'updateStatus',
+          text: `已达到最大页数限制 (${maxPages} 页)，开始识别...`
+        }).catch(() => {});
+        break;
+      }
+
+    } while (continuousPageMode);
+
+    console.log(`[OCREngine] all ${pageCount} pages captured, total pieces: ${allPieces.length}, starting OCR...`);
+
+    const settings = await getConfig();
+    const text = await recognize(allPieces, settings.lang, settings.ocrEngine || 'tesseract', settings, (progress) => {
+      chrome.tabs.sendMessage(targetTabId, {
+        action: 'updateStatus',
+        text: `正在识别: ${progress.status}`
+      }).catch(() => {});
     });
-    console.log('[OCREngine] show result panel');
-    await saveToHistory(text, 'full');
-    await showResultInContentScript(text, null, 'full', tabId);
-    return text;
+
+    const finalText = text || '(未识别到文字)';
+    await saveToHistory(finalText, 'full');
+    await showResultInContentScript(finalText, null, 'full', targetTabId);
+    return finalText;
   } catch (err) {
     console.error('[OCREngine] runFullPageOcr error:', err);
-    await showResultInContentScript(null, err.message);
+    if (targetTabId) {
+      await showResultInContentScript(null, err.message, 'full', targetTabId);
+    } else {
+      await showResultInContentScript(null, err.message);
+    }
     throw err;
   } finally {
     state.isCapturing = false;
@@ -796,20 +925,93 @@ async function runAreaOcr(area, onProgress) {
     return;
   }
   state.isCapturing = true;
+  state.abortRequested = false;
+  let targetTabId = null;
+
   try {
-    const { pieces, settings, tabId } = await captureSequence(area, onProgress);
-    const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings, (progress) => {
-      chrome.tabs.sendMessage(tabId, {
+    const config = await getConfig();
+    const continuousPageMode = config.continuousPageMode || false;
+    const maxPages = config.maxContinuousPages || 20;
+    console.log('[OCREngine] continuousPageMode:', continuousPageMode, 'maxPages:', maxPages);
+
+    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!activeTabs.length) throw new Error('没有活动标签页');
+    targetTabId = activeTabs[0].id;
+
+    let allPieces = [];
+    let pageCount = 0;
+
+    do {
+      pageCount++;
+      console.log(`[OCREngine] processing page ${pageCount}`);
+
+      const { pieces } = await captureSequence(area, onProgress);
+      console.log(`[OCREngine] page ${pageCount} captured, pieces:`, pieces.length);
+      allPieces.push(...pieces);
+
+      if (state.abortRequested) {
+        console.log('[OCREngine] abort requested, stopping area loop');
+        break;
+      }
+
+      if (!continuousPageMode) break;
+
+      const findResult = await chrome.tabs.sendMessage(targetTabId, { action: 'findNextPage' });
+      if (!findResult || !findResult.found) {
+        console.log('[OCREngine] no next page button found, stopping');
+        await chrome.tabs.sendMessage(targetTabId, {
+          action: 'updateStatus',
+          text: `已完成 ${pageCount} 页截图，开始识别...`
+        }).catch(() => {});
+        break;
+      }
+
+      await chrome.tabs.sendMessage(targetTabId, {
         action: 'updateStatus',
-        text: progress.status
-      }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
+        text: `正在翻页到第 ${pageCount + 1} 页...`
+      }).catch(() => {});
+
+      const clickResult = await chrome.tabs.sendMessage(targetTabId, { action: 'clickNextPage' });
+      if (!clickResult || !clickResult.ok) break;
+
+      console.log('[OCREngine] waiting for page to load...');
+      const flipSettings = await getConfig();
+      await waitForTabReady(targetTabId, 15000);
+      if (flipSettings.pageFlipDelay > 800) {
+        await sleep(flipSettings.pageFlipDelay - 800);
+      }
+
+      if (pageCount >= maxPages) {
+        await chrome.tabs.sendMessage(targetTabId, {
+          action: 'updateStatus',
+          text: `已达到最大页数限制 (${maxPages} 页)，开始识别...`
+        }).catch(() => {});
+        break;
+      }
+
+    } while (continuousPageMode);
+
+    console.log(`[OCREngine] all ${pageCount} pages captured, total pieces: ${allPieces.length}, starting OCR...`);
+
+    const settings = await getConfig();
+    const text = await recognize(allPieces, settings.lang, settings.ocrEngine || 'tesseract', settings, (progress) => {
+      chrome.tabs.sendMessage(targetTabId, {
+        action: 'updateStatus',
+        text: `正在识别: ${progress.status}`
+      }).catch(() => {});
     });
-    await saveToHistory(text, 'area');
-    await showResultInContentScript(text, null, 'area', tabId);
-    return text;
+
+    const finalText = text || '(未识别到文字)';
+    await saveToHistory(finalText, 'area');
+    await showResultInContentScript(finalText, null, 'area', targetTabId);
+    return finalText;
   } catch (err) {
     console.error('[OCREngine] runAreaOcr error:', err);
-    await showResultInContentScript(null, err.message);
+    if (targetTabId) {
+      await showResultInContentScript(null, err.message, 'area', targetTabId);
+    } else {
+      await showResultInContentScript(null, err.message);
+    }
     throw err;
   } finally {
     state.isCapturing = false;
@@ -824,44 +1026,158 @@ async function runContainerOcr(container, onProgress) {
     return;
   }
   state.isCapturing = true;
+  state.abortRequested = false;
+  let targetTabId = null;
+
   try {
-    const containerHeight = container.scrollHeight || container.height;
+    const config = await getConfig();
+    const continuousPageMode = config.continuousPageMode || false;
+    const maxPages = config.maxContinuousPages || 20;
+    console.log('[OCREngine] continuousPageMode:', continuousPageMode, 'maxPages:', maxPages);
 
-    let captureArea;
-    if (container.isFixed) {
-      // fixed 定位容器：y 是视口坐标，截图不需要滚动，直接用视口坐标裁剪
-      // 将视口坐标转为文档坐标（截图时 offset=0）
-      captureArea = {
-        x: container.x,
-        y: container.y,      // 视口坐标，等同于文档坐标（因为不滚动）
-        width: container.width,
-        height: containerHeight,
-        isFixed: true
-      };
-    } else {
-      captureArea = {
-        x: container.x,
-        y: container.y,
-        width: container.width,
-        height: containerHeight
-      };
-    }
-    console.log('[OCREngine] container capture area:', captureArea);
-    console.log('[OCREngine] will capture from Y=' + captureArea.y + ' to Y=' + (captureArea.y + containerHeight));
+    // 获取 tabId 并保存
+    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!activeTabs.length) throw new Error('没有活动标签页');
+    targetTabId = activeTabs[0].id;
+    console.log('[OCREngine] target tab:', targetTabId);
 
-    const { pieces, settings, tabId } = await captureSequence(captureArea, onProgress);
-    const text = await recognize(pieces, settings.lang, settings.ocrEngine || 'tesseract', settings, (progress) => {
-      chrome.tabs.sendMessage(tabId, {
+    let allPieces = [];  // 存储所有页面的截图片段
+    let pageCount = 0;
+
+    do {
+      pageCount++;
+      console.log(`[OCREngine] processing page ${pageCount}`);
+
+      const containerHeight = container.scrollHeight || container.height;
+
+      let captureArea;
+      if (container.isFixed) {
+        captureArea = {
+          x: container.x,
+          y: container.y,
+          width: container.width,
+          height: containerHeight,
+          isFixed: true
+        };
+      } else {
+        captureArea = {
+          x: container.x,
+          y: container.y,
+          width: container.width,
+          height: containerHeight
+        };
+      }
+      console.log('[OCREngine] container capture area:', captureArea);
+
+      // 截图当前页
+      const { pieces } = await captureSequence(captureArea, onProgress);
+      console.log(`[OCREngine] page ${pageCount} captured, pieces:`, pieces.length);
+
+      // 将当前页的片段添加到总列表
+      allPieces.push(...pieces);
+
+      if (state.abortRequested) {
+        console.log('[OCREngine] abort requested, stopping container loop');
+        break;
+      }
+
+      if (!continuousPageMode) {
+        console.log('[OCREngine] continuousPageMode disabled, stopping after first page');
+        break;
+      }
+
+      // 检查是否有下一页
+      console.log('[OCREngine] checking for next page button...');
+      const findResult = await chrome.tabs.sendMessage(targetTabId, { action: 'findNextPage' });
+
+      if (!findResult || !findResult.found) {
+        console.log('[OCREngine] no next page button found, stopping');
+        await chrome.tabs.sendMessage(targetTabId, {
+          action: 'updateStatus',
+          text: `已完成 ${pageCount} 页截图，开始识别...`
+        }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
+        break;
+      }
+
+      console.log('[OCREngine] next page button found:', findResult.text);
+      await chrome.tabs.sendMessage(targetTabId, {
         action: 'updateStatus',
-        text: progress.status
+        text: `正在翻页到第 ${pageCount + 1} 页...`
+      }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
+
+      // 点击下一页
+      const clickResult = await chrome.tabs.sendMessage(targetTabId, { action: 'clickNextPage' });
+
+      if (!clickResult || !clickResult.ok) {
+        console.log('[OCREngine] failed to click next page, stopping');
+        break;
+      }
+
+      // 等待页面加载
+      console.log('[OCREngine] waiting for page to load...');
+      const flipSettings = await getConfig();
+      await waitForTabReady(targetTabId, 15000);
+      if (flipSettings.pageFlipDelay > 800) {
+        await sleep(flipSettings.pageFlipDelay - 800);
+      }
+
+      // 翻页后重新测量容器位置（新页面布局可能不同）
+      if (container.selector) {
+        console.log('[OCREngine] remeasuring container with selector:', container.selector);
+        const remeasured = await chrome.tabs.sendMessage(targetTabId, {
+          action: 'remeasureContainer',
+          selector: container.selector
+        }).catch(err => {
+          console.warn('[OCREngine] remeasureContainer failed:', err);
+          return null;
+        });
+
+        if (remeasured && remeasured.found) {
+          console.log('[OCREngine] container remeasured:', remeasured);
+          container = { ...container, ...remeasured };
+        } else {
+          console.warn('[OCREngine] remeasureContainer: not found, using previous coords');
+        }
+      }
+
+      if (pageCount >= maxPages) {
+        console.warn(`[OCREngine] reached maximum page limit (${maxPages}), stopping`);
+        await chrome.tabs.sendMessage(targetTabId, {
+          action: 'updateStatus',
+          text: `已达到最大页数限制 (${maxPages} 页)，开始识别...`
+        }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
+        break;
+      }
+
+    } while (continuousPageMode);
+
+    // 所有页面截图完成，开始统一 OCR
+    console.log(`[OCREngine] all ${pageCount} pages captured, total pieces: ${allPieces.length}, starting OCR...`);
+
+    await chrome.tabs.sendMessage(targetTabId, {
+      action: 'updateStatus',
+      text: `正在识别 ${pageCount} 页内容...`
+    }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
+
+    const settings = await getConfig();
+    const text = await recognize(allPieces, settings.lang, settings.ocrEngine || 'tesseract', settings, (progress) => {
+      chrome.tabs.sendMessage(targetTabId, {
+        action: 'updateStatus',
+        text: `正在识别: ${progress.status}`
       }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
     });
-    await saveToHistory(text, 'container');
-    await showResultInContentScript(text, null, 'container', tabId);
-    return text;
+
+    const finalText = text || '(未识别到文字)';
+    await saveToHistory(finalText, 'container');
+    await showResultInContentScript(finalText, null, 'container', targetTabId);
+    return finalText;
   } catch (err) {
     console.error('[OCREngine] runContainerOcr error:', err);
-    await showResultInContentScript(null, err.message);
+    if (targetTabId) {
+      await showResultInContentScript(null, err.message, 'container', targetTabId);
+    } else {
+      await showResultInContentScript(null, err.message);
+    }
     throw err;
   } finally {
     state.isCapturing = false;
@@ -983,6 +1299,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'openOptions') {
     chrome.runtime.openOptionsPage();
     sendResponse({ ok: true });
+    return false;
+  }
+
+  if (request.action === 'abortOcr') {
+    if (state.isCapturing) {
+      state.abortRequested = true;
+      console.log('[Background] abort requested');
+      sendResponse({ ok: true });
+    } else {
+      sendResponse({ ok: false, reason: 'not capturing' });
+    }
     return false;
   }
 

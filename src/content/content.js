@@ -844,8 +844,16 @@ function startContainerSelection() {
 
     try {
       showStatus('正在识别容器内容…');
-      // 保存目标元素到全局，供 hideFixedElementsExcept 使用
       window.__ocrTargetElement = currentElement;
+
+      // 生成稳定的选择器供翻页后重新定位
+      const tag = currentElement.tagName.toLowerCase();
+      const id = currentElement.id ? `#${currentElement.id}` : '';
+      const classes = currentElement.className && typeof currentElement.className === 'string'
+        ? currentElement.className.split(' ').filter(c => c && !c.startsWith('kst-ocr')).map(c => `.${c}`).join('')
+        : '';
+      const containerSelector = `${tag}${id}${classes}` || tag;
+
       const res = await chrome.runtime.sendMessage({
         action: 'startContainerOcr',
         container: {
@@ -855,14 +863,15 @@ function startContainerSelection() {
           height: containerHeight,
           scrollHeight: containerHeight,
           element: currentElement.tagName,
-          isFixed
+          isFixed,
+          selector: containerSelector
         }
       });
       console.log('[Content] startContainerOcr response:', res);
-      window.__ocrTargetElement = null; // 清理
+      window.__ocrTargetElement = null;
     } catch (err) {
       console.error('[Content] startContainerOcr failed:', err);
-      window.__ocrTargetElement = null; // 清理
+      window.__ocrTargetElement = null;
       hideStatus();
       showResultInPanel(`错误：${err.message}`, '识别失败');
     }
@@ -1150,6 +1159,298 @@ function startAreaSelection() {
   overlay.addEventListener('mouseup', onMouseUp);
 }
 
+// 调试函数：手动扫描并打印所有候选分页按钮（在浏览器控制台调用 window.debugFindNextPage()）
+window.debugFindNextPage = function() {
+  console.log('=== 调试：查找下一页按钮 ===');
+
+  // 获取当前页码
+  let currentPageNumber = null;
+  const urlMatch = window.location.href.match(/[?&/](?:page|p|id)=?(\d+)/i);
+  if (urlMatch) {
+    currentPageNumber = parseInt(urlMatch[1], 10);
+  } else {
+    const activePageElements = document.querySelectorAll('.active, .current, [aria-current="page"]');
+    for (const el of activePageElements) {
+      const num = parseInt(el.textContent?.trim(), 10);
+      if (!isNaN(num) && num > 0) {
+        currentPageNumber = num;
+        break;
+      }
+    }
+  }
+  console.log('当前页码:', currentPageNumber || '未检测到');
+
+  // 查找所有分页相关的元素
+  const selectors = ['.pagination a', '.pager a', '.page-link', '.page-item a', 'a[href*="page"]', 'a[href*=".html"]'];
+  const allCandidates = [];
+
+  for (const sel of selectors) {
+    try {
+      const elements = document.querySelectorAll(sel);
+      allCandidates.push(...Array.from(elements));
+    } catch (err) {}
+  }
+
+  // 去重
+  const candidates = Array.from(new Set(allCandidates));
+  console.log('找到候选元素总数:', candidates.length);
+
+  // 打印前20个候选元素
+  candidates.slice(0, 20).forEach((el, i) => {
+    const text = el.textContent?.trim() || '';
+    const href = el.getAttribute('href') || '';
+    const className = el.className || '';
+    const id = el.id || '';
+    console.log(`[${i}] 文本:"${text}" href:"${href}" class:"${className}" id:"${id}"`);
+  });
+
+  // 尝试调用查找函数
+  const result = findNextPageButton();
+  if (result) {
+    console.log('✅ 找到下一页按钮:', result.textContent?.trim(), result);
+    result.style.outline = '3px solid red'; // 高亮显示
+  } else {
+    console.log('❌ 未找到下一页按钮');
+  }
+};
+
+// 智能查找"下一页"按钮
+function findNextPageButton() {
+  console.log('[Content] findNextPageButton called');
+
+  // 常见的"下一页"文本模式（排除"章"相关的）
+  const nextPageTexts = [
+    '下一页', '下页', 'next page', 'next', '次のページ',
+    '다음 페이지', '›', '»', '→', '＞', 'Next', 'NEXT'
+  ];
+
+  // 排除的"章"相关文本（不应该被识别为下一页）
+  const excludeChapterTexts = [
+    '下一章', '上一章', 'next chapter', 'previous chapter',
+    '次の章', '前の章', 'next chap', 'prev chap'
+  ];
+
+  // 常见的选择器模式
+  const selectors = [
+    'a[href*="next"]',
+    'a[class*="next"]',
+    'a[id*="next"]',
+    'button[class*="next"]',
+    'button[id*="next"]',
+    'a[href*="下一页"]',
+    'a[class*="下一页"]',
+    'a[rel="next"]',
+    '.pagination a',
+    '.pager a',
+    '.page-link',
+    '.page-item a',
+    '.chapterPages a'  // 添加常见的章节分页选择器
+  ];
+
+  let candidates = [];
+
+  // 1. 先通过选择器查找
+  for (const selector of selectors) {
+    try {
+      const elements = document.querySelectorAll(selector);
+      candidates.push(...Array.from(elements));
+    } catch (err) {
+      console.warn('[Content] selector failed:', selector, err);
+    }
+  }
+
+  // 2. 查找所有 a 和 button 元素
+  const allLinks = document.querySelectorAll('a, button');
+  candidates.push(...Array.from(allLinks));
+
+  // 3. 去重
+  candidates = Array.from(new Set(candidates));
+
+  console.log('[Content] total candidates:', candidates.length);
+
+  // 获取当前页码（多种方式）
+  let currentPageNumber = null;
+
+  // 方式1: 从 URL 中提取
+  const urlMatch = window.location.href.match(/[?&/](?:page|p)=?(\d+)|_(\d+)\.html/i);
+  if (urlMatch) {
+    currentPageNumber = parseInt(urlMatch[1] || urlMatch[2], 10);
+  }
+
+  // 方式2: 从当前激活的页码元素中提取
+  if (!currentPageNumber) {
+    const activePageElements = document.querySelectorAll('.active, .current, .curr, [aria-current="page"]');
+    for (const el of activePageElements) {
+      // 提取数字（支持 "【1】"、"1"、"第1页" 等格式）
+      const textMatch = el.textContent?.trim().match(/(\d+)/);
+      if (textMatch) {
+        const num = parseInt(textMatch[1], 10);
+        if (!isNaN(num) && num > 0) {
+          currentPageNumber = num;
+          console.log('[Content] detected current page from active element:', num);
+          break;
+        }
+      }
+    }
+  }
+
+  console.log('[Content] detected current page number:', currentPageNumber);
+
+  // 4. 过滤和评分
+  const scored = candidates
+    .map(el => {
+      // 检查元素是否可见和可点击
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+
+      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return null;
+      }
+
+      if (rect.width === 0 || rect.height === 0) {
+        return null;
+      }
+
+      const text = el.textContent?.trim().toLowerCase() || '';
+      const rawText = el.textContent?.trim() || '';
+      const href = el.getAttribute('href')?.toLowerCase() || '';
+      const className = el.className?.toLowerCase() || '';
+      const id = el.id?.toLowerCase() || '';
+      const ariaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
+
+      let score = 0;
+
+      // 排除"章"相关的按钮（连页模式不应该跳章）
+      for (const excludeText of excludeChapterTexts) {
+        const lowerText = excludeText.toLowerCase();
+        if (text.includes(lowerText) || href.includes(lowerText) ||
+            className.includes(lowerText.replace(/\s+/g, '')) ||
+            id.includes(lowerText.replace(/\s+/g, ''))) {
+          console.log('[Content] excluding chapter-related button:', text);
+          return null; // 直接排除，不参与评分
+        }
+      }
+
+      // 文本内容匹配
+      for (const nextText of nextPageTexts) {
+        const lowerText = nextText.toLowerCase();
+        if (text === lowerText) {
+          score += 100; // 精确匹配
+        } else if (text.includes(lowerText)) {
+          score += 50; // 包含匹配
+        }
+      }
+
+      // 纯数字分页处理（支持 "【2】"、"2"、"第2页" 等格式）
+      const textNumberMatch = rawText.match(/(\d+)/);
+      if (textNumberMatch) {
+        const textNumber = parseInt(textNumberMatch[1], 10);
+
+        // 确保提取到的是页码数字
+        if (!isNaN(textNumber) && textNumber > 0) {
+          if (currentPageNumber && textNumber === currentPageNumber + 1) {
+            score += 150; // 提高纯数字下一页的优先级
+            console.log('[Content] found numeric next page:', textNumber, 'score +150');
+          } else if (!currentPageNumber && textNumber > 1) {
+            // 没有检测到当前页码，但数字大于1，可能是下一页
+            score += 30;
+          }
+        }
+      }
+
+      // href 中的页码匹配（支持 "12062_2.html" 这种格式）
+      const hrefPageMatch = href.match(/[?&/](?:page|p)=?(\d+)|_(\d+)\.html/i);
+      if (hrefPageMatch && currentPageNumber) {
+        const hrefPageNum = parseInt(hrefPageMatch[1] || hrefPageMatch[2], 10);
+        if (hrefPageNum === currentPageNumber + 1) {
+          score += 80;
+          console.log('[Content] href page number matches next page:', hrefPageNum);
+        }
+      }
+
+      // href 匹配（降低优先级，因为可能匹配到"下一章"）
+      if (href.includes('next') && !href.includes('chapter') && !href.includes('chap')) {
+        score += 20;
+      }
+      if (href.includes('下一页')) {
+        score += 30;
+      }
+
+      // class/id 匹配
+      if (className.includes('next') && !className.includes('chapter')) {
+        score += 15;
+      }
+      if (id.includes('next') && !id.includes('chapter')) {
+        score += 15;
+      }
+
+      // aria-label 匹配
+      if (ariaLabel.includes('next') && !ariaLabel.includes('chapter')) {
+        score += 10;
+      }
+
+      // 排除"上一页"按钮
+      if (text.includes('上一页') || text.includes('prev') || text.includes('previous') ||
+          text.includes('‹') || text.includes('«') || text.includes('←')) {
+        score -= 1000;
+      }
+
+      // 排除当前页（激活状态）
+      if (className.includes('active') || className.includes('current') || className.includes('curr') ||
+          el.getAttribute('aria-current') === 'page' || el.classList.contains('curr')) {
+        score -= 1000;
+      }
+
+      // 排除已禁用的按钮
+      if (el.disabled || el.getAttribute('disabled') !== null ||
+          className.includes('disabled') || className.includes('inactive')) {
+        score -= 1000;
+      }
+
+      return score > 0 ? { element: el, score, text: rawText } : null;
+    })
+    .filter(item => item !== null)
+    .sort((a, b) => b.score - a.score);
+
+  console.log('[Content] scored candidates:', scored.slice(0, 5).map(s => ({ score: s.score, text: s.text })));
+
+  if (scored.length > 0) {
+    console.log('[Content] found next page button:', scored[0].text, 'score:', scored[0].score);
+    return scored[0].element;
+  }
+
+  console.log('[Content] no next page button found');
+  return null;
+}
+
+// 点击下一页按钮
+function clickNextPage() {
+  console.log('[Content] clickNextPage called');
+  const button = findNextPageButton();
+
+  if (!button) {
+    console.log('[Content] no next page button to click');
+    return false;
+  }
+
+  console.log('[Content] clicking next page button:', button);
+
+  try {
+    // 尝试多种点击方式以确保兼容性
+    button.click();
+
+    // 如果是 a 标签且有 href，也可以尝试导航
+    if (button.tagName === 'A' && button.href) {
+      console.log('[Content] button is a link with href:', button.href);
+    }
+
+    return true;
+  } catch (err) {
+    console.error('[Content] failed to click next page button:', err);
+    return false;
+  }
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('[Content] received message:', request.action, 'from:', sender?.id);
 
@@ -1239,6 +1540,68 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     return true;
   }
+  if (request.action === 'findNextPage') {
+    try {
+      const button = findNextPageButton();
+      sendResponse({ found: !!button, text: button?.textContent?.trim() || '' });
+    } catch (err) {
+      console.error('[Content] findNextPage error:', err);
+      sendResponse({ found: false, error: errorToString(err) });
+    }
+    return true;
+  }
+  if (request.action === 'clickNextPage') {
+    try {
+      const success = clickNextPage();
+      sendResponse({ ok: success });
+    } catch (err) {
+      console.error('[Content] clickNextPage error:', err);
+      sendResponse({ ok: false, error: errorToString(err) });
+    }
+    return true;
+  }
+  if (request.action === 'remeasureContainer') {
+    try {
+      const selector = request.selector;
+      const el = selector ? document.querySelector(selector) : null;
+      if (!el) {
+        console.warn('[Content] remeasureContainer: element not found for selector:', selector);
+        sendResponse({ found: false });
+        return true;
+      }
+
+      const rect = el.getBoundingClientRect();
+      const scrollX = window.scrollX || window.pageXOffset;
+      const scrollY = window.scrollY || window.pageYOffset;
+      const computedStyle = window.getComputedStyle(el);
+      const isFixed = computedStyle.position === 'fixed';
+
+      const containerX = isFixed ? rect.left : rect.left + scrollX;
+      const containerY = isFixed ? rect.top : rect.top + scrollY;
+      const scrollHeight = el.scrollHeight;
+      const offsetHeight = el.offsetHeight;
+      const clientHeight = el.clientHeight;
+      const rectHeight = rect.height;
+      const hasScrollContent = scrollHeight > clientHeight + 1;
+      const containerHeight = hasScrollContent ? Math.max(scrollHeight, offsetHeight, rectHeight) : rectHeight;
+
+      console.log('[Content] remeasureContainer result:', { containerX, containerY, containerHeight, isFixed });
+      sendResponse({
+        found: true,
+        x: containerX,
+        y: containerY,
+        width: rect.width,
+        height: containerHeight,
+        scrollHeight: containerHeight,
+        isFixed,
+        element: el.tagName
+      });
+    } catch (err) {
+      console.error('[Content] remeasureContainer error:', err);
+      sendResponse({ found: false, error: errorToString(err) });
+    }
+    return true;
+  }
   if (request.action === 'recognizeImages') {
     console.log('[Content] recognizeImages message received');
     recognizeImages(request.images, request.lang, request.baseUrl)
@@ -1269,3 +1632,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 setTimeout(() => {
   createFloatBall();
 }, 500);
+
+// Alt+Esc 终止 OCR
+document.addEventListener('keydown', (e) => {
+  if (e.altKey && e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    chrome.runtime.sendMessage({ action: 'abortOcr' }, (res) => {
+      if (res && res.ok) {
+        showStatus('已终止 OCR');
+        setTimeout(() => hideStatus(), 2000);
+      }
+    });
+  }
+}, true);

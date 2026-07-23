@@ -3,6 +3,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const langInput = document.getElementById('lang');
   const delayInput = document.getElementById('delay');
   const historyLimitInput = document.getElementById('historyLimit');
+  const continuousPageCheckbox = document.getElementById('continuousPageMode');
+  const maxContinuousPagesInput = document.getElementById('maxContinuousPages');
+  const pageFlipDelayInput = document.getElementById('pageFlipDelay');
+  const saveDebugScreenshotsCheckbox = document.getElementById('saveDebugScreenshots');
   const paddleocrSettings = document.getElementById('paddleocrSettings');
   const paddleOcrApiTokenInput = document.getElementById('paddleOcrApiToken');
   const paddleOcrApiModelSelect = document.getElementById('paddleOcrApiModel');
@@ -23,6 +27,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (config.historyLimit != null) historyLimitInput.value = config.historyLimit;
   if (config.paddleOcrApiToken) paddleOcrApiTokenInput.value = config.paddleOcrApiToken;
   if (config.paddleOcrApiModel) paddleOcrApiModelSelect.value = config.paddleOcrApiModel;
+  continuousPageCheckbox.checked = !!config.continuousPageMode;
+  if (config.maxContinuousPages != null) maxContinuousPagesInput.value = config.maxContinuousPages;
+  if (config.pageFlipDelay != null) pageFlipDelayInput.value = config.pageFlipDelay;
+  saveDebugScreenshotsCheckbox.checked = !!config.saveDebugScreenshots;
 
   // 根据选择的引擎显示/隐藏对应的配置
   function updateEngineSettings() {
@@ -59,7 +67,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       delay: parseInt(delayInput.value, 10) || 300,
       historyLimit: parseInt(historyLimitInput.value, 10) || 50,
       paddleOcrApiToken: paddleOcrApiTokenInput.value.trim(),
-      paddleOcrApiModel: paddleOcrApiModelSelect.value
+      paddleOcrApiModel: paddleOcrApiModelSelect.value,
+      continuousPageMode: continuousPageCheckbox.checked,
+      maxContinuousPages: parseInt(maxContinuousPagesInput.value, 10) || 20,
+      pageFlipDelay: parseInt(pageFlipDelayInput.value, 10) || 2000,
+      saveDebugScreenshots: saveDebugScreenshotsCheckbox.checked
     };
 
     // 验证：如果选择了 PaddleOCR，必须填写 token

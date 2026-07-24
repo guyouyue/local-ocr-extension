@@ -1214,6 +1214,102 @@ window.debugFindNextPage = function() {
   }
 };
 
+// 智能查找"下一章"按钮（只匹配章相关，不匹配页内翻页）
+function findNextChapterButton() {
+  console.log('[Content] findNextChapterButton called');
+
+  const nextChapterTexts = [
+    '下一章', '下章', 'next chapter', 'next chap', '次の章', '다음 장'
+  ];
+
+  const excludePageTexts = [
+    '下一页', '下页', 'next page'
+  ];
+
+  const selectors = [
+    'a[class*="next"]', 'a[id*="next"]',  // class="next" 或 id="next"
+    'a[class*="next-chapter"]', 'a[id*="next-chapter"]',
+    'a[class*="nextchapter"]', 'a[id*="nextchapter"]',
+    '.next-chapter a', '#next-chapter',
+    'a, button'  // 最后才搜索全部 a 和 button
+  ];
+
+  let candidates = [];
+  for (const sel of selectors) {
+    try {
+      candidates.push(...Array.from(document.querySelectorAll(sel)));
+    } catch (err) {}
+  }
+  candidates = Array.from(new Set(candidates));
+
+  const scored = candidates.map(el => {
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return null;
+    if (rect.width === 0 || rect.height === 0) return null;
+
+    const text = el.textContent?.trim().toLowerCase() || '';
+    const rawText = el.textContent?.trim() || '';
+    const href = el.getAttribute('href')?.toLowerCase() || '';
+    const className = el.className?.toLowerCase() || '';
+    const id = el.id?.toLowerCase() || '';
+
+    // 必须包含章相关词才计分
+    let score = 0;
+    for (const t of nextChapterTexts) {
+      const lt = t.toLowerCase();
+      if (text === lt) { score += 100; break; }
+      if (text.includes(lt)) { score += 60; break; }
+      if (href.includes(lt.replace(/\s+/g, '-')) || href.includes(lt.replace(/\s+/g, '_'))) { score += 40; break; }
+      if (className.includes(lt.replace(/\s+/g, '')) || id.includes(lt.replace(/\s+/g, ''))) { score += 30; break; }
+    }
+
+    if (score === 0) return null;
+
+    console.log('[Content] findNextChapterButton candidate matched:', { text: rawText, href, className, score });
+    chrome.runtime.sendMessage({ action: '__debugLog', msg: `findNextChapter matched: text="${rawText}" href="${href}" class="${className}" score=${score}` }).catch(() => {});
+
+    // 排除页内翻页词
+    for (const t of excludePageTexts) {
+      if (text.includes(t.toLowerCase())) {
+        console.log('[Content] excluded by page text:', rawText, t);
+        chrome.runtime.sendMessage({ action: '__debugLog', msg: `findNextChapter excluded(page text): text="${rawText}" rule="${t}"` }).catch(() => {});
+        return null;
+      }
+    }
+
+    // 排除"上一章"
+    if (text.includes('上一章') || text.includes('prev') || text.includes('previous') ||
+        text.includes('前の章') || className.includes('prev')) {
+      console.log('[Content] excluded by prev chapter:', rawText, className);
+      chrome.runtime.sendMessage({ action: '__debugLog', msg: `findNextChapter excluded(prev): text="${rawText}" class="${className}"` }).catch(() => {});
+      return null;
+    }
+
+    // 排除禁用
+    if (el.disabled || el.getAttribute('disabled') !== null ||
+        className.includes('disabled') || className.includes('inactive')) {
+      return null;
+    }
+
+    return { element: el, score, text: rawText };
+  }).filter(Boolean).sort((a, b) => b.score - a.score);
+
+  console.log('[Content] chapter candidates:', scored.slice(0, 3).map(s => ({ score: s.score, text: s.text })));
+
+  if (scored.length > 0) {
+    const winner = scored[0];
+    const winnerHref = winner.element.getAttribute('href') || '';
+    console.log('[Content] found next chapter button:', winner.text, 'score:', winner.score);
+    chrome.runtime.sendMessage({ action: '__debugLog', msg: `findNextChapter SELECTED: text="${winner.text}" href="${winnerHref}" score=${winner.score}` }).catch(() => {});
+    return winner.element;
+  }
+
+  console.log('[Content] no next chapter button found');
+  chrome.runtime.sendMessage({ action: '__debugLog', msg: 'findNextChapter: no button found' }).catch(() => {});
+  return null;
+}
+
 // 智能查找"下一页"按钮
 function findNextPageButton() {
   console.log('[Content] findNextPageButton called');
@@ -1547,6 +1643,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     } catch (err) {
       console.error('[Content] findNextPage error:', err);
       sendResponse({ found: false, error: errorToString(err) });
+    }
+    return true;
+  }
+  if (request.action === 'findNextChapter') {
+    try {
+      const button = findNextChapterButton();
+      sendResponse({ found: !!button, text: button?.textContent?.trim() || '' });
+    } catch (err) {
+      console.error('[Content] findNextChapter error:', err);
+      sendResponse({ found: false, error: errorToString(err) });
+    }
+    return true;
+  }
+  if (request.action === 'clickNextChapter') {
+    try {
+      const button = findNextChapterButton();
+      if (!button) { sendResponse({ ok: false }); return true; }
+      button.click();
+      sendResponse({ ok: true });
+    } catch (err) {
+      console.error('[Content] clickNextChapter error:', err);
+      sendResponse({ ok: false, error: errorToString(err) });
     }
     return true;
   }

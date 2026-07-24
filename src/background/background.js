@@ -747,7 +747,7 @@ async function captureSequence(captureArea = null, onProgress) {
     console.log('[OCREngine] capturing visible tab');
     let dataUrl = null;
     let retry = 0;
-    while (!dataUrl && retry < 5) {
+    while (!dataUrl && retry < 10) {
       try {
         dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
       } catch (err) {
@@ -755,12 +755,17 @@ async function captureSequence(captureArea = null, onProgress) {
           console.log('[OCREngine] capture rate limited, retrying in 1s');
           await sleep(1000);
           retry++;
+        } else if (err.message && err.message.includes('image readback failed')) {
+          // 标签页被遮挡（切换到其他应用），等待后重试
+          retry++;
+          console.log(`[OCREngine] capture readback failed (tab occluded?), retry ${retry}/10 in 2s`);
+          await sleep(2000);
         } else {
           throw err;
         }
       }
     }
-    if (!dataUrl) throw new Error('截图失败，超过重试次数');
+    if (!dataUrl) throw new Error('截图失败，请保持浏览器标签页在前台（超过重试次数）');
     console.log('[OCREngine] captured screenshot length:', dataUrl?.length);
 
     const [cropResult] = await sendToActiveTab({
@@ -832,73 +837,78 @@ async function runFullPageOcr(onProgress) {
     const config = await getConfig();
     const continuousPageMode = config.continuousPageMode || false;
     const maxPages = config.maxContinuousPages || 20;
-    console.log('[OCREngine] continuousPageMode:', continuousPageMode, 'maxPages:', maxPages);
+    const continuousChapterMode = config.continuousChapterMode || false;
+    const maxChapters = config.maxContinuousChapters || 10;
+    const chapterFlipDelay = config.chapterFlipDelay || 3000;
 
     const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!activeTabs.length) throw new Error('没有活动标签页');
     targetTabId = activeTabs[0].id;
 
     let allPieces = [];
-    let pageCount = 0;
+    let chapterCount = 0;
 
     do {
-      pageCount++;
-      console.log(`[OCREngine] processing page ${pageCount}`);
+      chapterCount++;
+      console.log(`[OCREngine] chapter ${chapterCount}`);
 
-      const { pieces } = await captureSequence(null, onProgress);
-      console.log(`[OCREngine] page ${pageCount} captured, pieces:`, pieces.length);
-      allPieces.push(...pieces);
+      // 章内连页循环（pageCount 每章独立重置，maxPages 是单章上限）
+      let pageCount = 0;
+      do {
+        pageCount++;
+        const { pieces } = await captureSequence(null, onProgress);
+        allPieces.push(...pieces);
 
-      if (state.abortRequested) {
-        console.log('[OCREngine] abort requested, stopping full page loop');
+        if (state.abortRequested) break;
+        if (!continuousPageMode) break;
+
+        if (pageCount >= maxPages) {
+          await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `第 ${chapterCount} 章已达单章页数上限 ${maxPages}` }).catch(() => {});
+          break;
+        }
+
+        const findResult = await chrome.tabs.sendMessage(targetTabId, { action: 'findNextPage' });
+        if (!findResult || !findResult.found) {
+          await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `第 ${chapterCount} 章已完成 ${pageCount} 页截图` }).catch(() => {});
+          break;
+        }
+
+        await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `第 ${chapterCount} 章 翻页到第 ${pageCount + 1} 页...` }).catch(() => {});
+        const clickResult = await chrome.tabs.sendMessage(targetTabId, { action: 'clickNextPage' });
+        if (!clickResult || !clickResult.ok) break;
+
+        const flipSettings = await getConfig();
+        await waitForTabReady(targetTabId, 15000);
+        if (flipSettings.pageFlipDelay > 800) await sleep(flipSettings.pageFlipDelay - 800);
+      } while (continuousPageMode);
+
+      if (state.abortRequested) break;
+      if (!continuousChapterMode) break;
+
+      // 已读完 maxChapters 章，不再跳章
+      if (chapterCount >= maxChapters) {
+        await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `已达章数上限 ${maxChapters}，开始识别...` }).catch(() => {});
         break;
       }
 
-      if (!continuousPageMode) break;
-
-      const findResult = await chrome.tabs.sendMessage(targetTabId, { action: 'findNextPage' });
-      if (!findResult || !findResult.found) {
-        console.log('[OCREngine] no next page button found, stopping');
-        await chrome.tabs.sendMessage(targetTabId, {
-          action: 'updateStatus',
-          text: `已完成 ${pageCount} 页截图，开始识别...`
-        }).catch(() => {});
+      // 跳章
+      const chapterFind = await chrome.tabs.sendMessage(targetTabId, { action: 'findNextChapter' });
+      if (!chapterFind || !chapterFind.found) {
+        await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `已无下一章，共 ${chapterCount} 章，开始识别...` }).catch(() => {});
         break;
       }
 
-      await chrome.tabs.sendMessage(targetTabId, {
-        action: 'updateStatus',
-        text: `正在翻页到第 ${pageCount + 1} 页...`
-      }).catch(() => {});
+      await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `正在跳转到第 ${chapterCount + 1} 章...` }).catch(() => {});
+      const chapterClick = await chrome.tabs.sendMessage(targetTabId, { action: 'clickNextChapter' });
+      if (!chapterClick || !chapterClick.ok) break;
 
-      const clickResult = await chrome.tabs.sendMessage(targetTabId, { action: 'clickNextPage' });
-      if (!clickResult || !clickResult.ok) break;
-
-      console.log('[OCREngine] waiting for page to load...');
-      const flipSettings = await getConfig();
       await waitForTabReady(targetTabId, 15000);
-      if (flipSettings.pageFlipDelay > 800) {
-        await sleep(flipSettings.pageFlipDelay - 800);
-      }
-
-      if (pageCount >= maxPages) {
-        await chrome.tabs.sendMessage(targetTabId, {
-          action: 'updateStatus',
-          text: `已达到最大页数限制 (${maxPages} 页)，开始识别...`
-        }).catch(() => {});
-        break;
-      }
-
-    } while (continuousPageMode);
-
-    console.log(`[OCREngine] all ${pageCount} pages captured, total pieces: ${allPieces.length}, starting OCR...`);
+      if (chapterFlipDelay > 800) await sleep(chapterFlipDelay - 800);
+    } while (continuousChapterMode);
 
     const settings = await getConfig();
     const text = await recognize(allPieces, settings.lang, settings.ocrEngine || 'tesseract', settings, (progress) => {
-      chrome.tabs.sendMessage(targetTabId, {
-        action: 'updateStatus',
-        text: `正在识别: ${progress.status}`
-      }).catch(() => {});
+      chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `正在识别: ${progress.status}` }).catch(() => {});
     });
 
     const finalText = text || '(未识别到文字)';
@@ -907,11 +917,8 @@ async function runFullPageOcr(onProgress) {
     return finalText;
   } catch (err) {
     console.error('[OCREngine] runFullPageOcr error:', err);
-    if (targetTabId) {
-      await showResultInContentScript(null, err.message, 'full', targetTabId);
-    } else {
-      await showResultInContentScript(null, err.message);
-    }
+    if (targetTabId) await showResultInContentScript(null, err.message, 'full', targetTabId);
+    else await showResultInContentScript(null, err.message);
     throw err;
   } finally {
     state.isCapturing = false;
@@ -932,73 +939,74 @@ async function runAreaOcr(area, onProgress) {
     const config = await getConfig();
     const continuousPageMode = config.continuousPageMode || false;
     const maxPages = config.maxContinuousPages || 20;
-    console.log('[OCREngine] continuousPageMode:', continuousPageMode, 'maxPages:', maxPages);
+    const continuousChapterMode = config.continuousChapterMode || false;
+    const maxChapters = config.maxContinuousChapters || 10;
+    const chapterFlipDelay = config.chapterFlipDelay || 3000;
 
     const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!activeTabs.length) throw new Error('没有活动标签页');
     targetTabId = activeTabs[0].id;
 
     let allPieces = [];
-    let pageCount = 0;
+    let chapterCount = 0;
 
     do {
-      pageCount++;
-      console.log(`[OCREngine] processing page ${pageCount}`);
+      chapterCount++;
 
-      const { pieces } = await captureSequence(area, onProgress);
-      console.log(`[OCREngine] page ${pageCount} captured, pieces:`, pieces.length);
-      allPieces.push(...pieces);
+      let pageCount = 0;
+      do {
+        pageCount++;
+        const { pieces } = await captureSequence(area, onProgress);
+        allPieces.push(...pieces);
 
-      if (state.abortRequested) {
-        console.log('[OCREngine] abort requested, stopping area loop');
+        if (state.abortRequested) break;
+        if (!continuousPageMode) break;
+
+        if (pageCount >= maxPages) {
+          await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `第 ${chapterCount} 章已达单章页数上限 ${maxPages}` }).catch(() => {});
+          break;
+        }
+
+        const findResult = await chrome.tabs.sendMessage(targetTabId, { action: 'findNextPage' });
+        if (!findResult || !findResult.found) {
+          await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `第 ${chapterCount} 章已完成 ${pageCount} 页截图` }).catch(() => {});
+          break;
+        }
+
+        await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `第 ${chapterCount} 章 翻页到第 ${pageCount + 1} 页...` }).catch(() => {});
+        const clickResult = await chrome.tabs.sendMessage(targetTabId, { action: 'clickNextPage' });
+        if (!clickResult || !clickResult.ok) break;
+
+        const flipSettings = await getConfig();
+        await waitForTabReady(targetTabId, 15000);
+        if (flipSettings.pageFlipDelay > 800) await sleep(flipSettings.pageFlipDelay - 800);
+      } while (continuousPageMode);
+
+      if (state.abortRequested) break;
+      if (!continuousChapterMode) break;
+
+      const chapterFind = await chrome.tabs.sendMessage(targetTabId, { action: 'findNextChapter' });
+      if (!chapterFind || !chapterFind.found) {
+        await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `已无下一章，共 ${chapterCount} 章，开始识别...` }).catch(() => {});
         break;
       }
 
-      if (!continuousPageMode) break;
+      await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `正在跳转到第 ${chapterCount + 1} 章...` }).catch(() => {});
+      const chapterClick = await chrome.tabs.sendMessage(targetTabId, { action: 'clickNextChapter' });
+      if (!chapterClick || !chapterClick.ok) break;
 
-      const findResult = await chrome.tabs.sendMessage(targetTabId, { action: 'findNextPage' });
-      if (!findResult || !findResult.found) {
-        console.log('[OCREngine] no next page button found, stopping');
-        await chrome.tabs.sendMessage(targetTabId, {
-          action: 'updateStatus',
-          text: `已完成 ${pageCount} 页截图，开始识别...`
-        }).catch(() => {});
-        break;
-      }
-
-      await chrome.tabs.sendMessage(targetTabId, {
-        action: 'updateStatus',
-        text: `正在翻页到第 ${pageCount + 1} 页...`
-      }).catch(() => {});
-
-      const clickResult = await chrome.tabs.sendMessage(targetTabId, { action: 'clickNextPage' });
-      if (!clickResult || !clickResult.ok) break;
-
-      console.log('[OCREngine] waiting for page to load...');
-      const flipSettings = await getConfig();
       await waitForTabReady(targetTabId, 15000);
-      if (flipSettings.pageFlipDelay > 800) {
-        await sleep(flipSettings.pageFlipDelay - 800);
-      }
+      if (chapterFlipDelay > 800) await sleep(chapterFlipDelay - 800);
 
-      if (pageCount >= maxPages) {
-        await chrome.tabs.sendMessage(targetTabId, {
-          action: 'updateStatus',
-          text: `已达到最大页数限制 (${maxPages} 页)，开始识别...`
-        }).catch(() => {});
+      if (chapterCount >= maxChapters) {
+        await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `已达章数上限 ${maxChapters}，开始识别...` }).catch(() => {});
         break;
       }
-
-    } while (continuousPageMode);
-
-    console.log(`[OCREngine] all ${pageCount} pages captured, total pieces: ${allPieces.length}, starting OCR...`);
+    } while (continuousChapterMode);
 
     const settings = await getConfig();
     const text = await recognize(allPieces, settings.lang, settings.ocrEngine || 'tesseract', settings, (progress) => {
-      chrome.tabs.sendMessage(targetTabId, {
-        action: 'updateStatus',
-        text: `正在识别: ${progress.status}`
-      }).catch(() => {});
+      chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `正在识别: ${progress.status}` }).catch(() => {});
     });
 
     const finalText = text || '(未识别到文字)';
@@ -1007,11 +1015,8 @@ async function runAreaOcr(area, onProgress) {
     return finalText;
   } catch (err) {
     console.error('[OCREngine] runAreaOcr error:', err);
-    if (targetTabId) {
-      await showResultInContentScript(null, err.message, 'area', targetTabId);
-    } else {
-      await showResultInContentScript(null, err.message);
-    }
+    if (targetTabId) await showResultInContentScript(null, err.message, 'area', targetTabId);
+    else await showResultInContentScript(null, err.message);
     throw err;
   } finally {
     state.isCapturing = false;
@@ -1020,7 +1025,6 @@ async function runAreaOcr(area, onProgress) {
 
 async function runContainerOcr(container, onProgress) {
   console.log('[OCREngine] runContainerOcr called, container:', container);
-  console.log('[OCREngine] container.isFixed =', container.isFixed, 'typeof =', typeof container.isFixed);
   if (state.isCapturing) {
     console.warn('[OCREngine] already capturing, skip');
     return;
@@ -1033,138 +1037,99 @@ async function runContainerOcr(container, onProgress) {
     const config = await getConfig();
     const continuousPageMode = config.continuousPageMode || false;
     const maxPages = config.maxContinuousPages || 20;
-    console.log('[OCREngine] continuousPageMode:', continuousPageMode, 'maxPages:', maxPages);
+    const continuousChapterMode = config.continuousChapterMode || false;
+    const maxChapters = config.maxContinuousChapters || 10;
+    const chapterFlipDelay = config.chapterFlipDelay || 3000;
 
-    // 获取 tabId 并保存
     const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!activeTabs.length) throw new Error('没有活动标签页');
     targetTabId = activeTabs[0].id;
-    console.log('[OCREngine] target tab:', targetTabId);
 
-    let allPieces = [];  // 存储所有页面的截图片段
-    let pageCount = 0;
+    let allPieces = [];
+    let chapterCount = 0;
 
     do {
-      pageCount++;
-      console.log(`[OCREngine] processing page ${pageCount}`);
+      chapterCount++;
 
-      const containerHeight = container.scrollHeight || container.height;
+      let pageCount = 0;
+      do {
+        pageCount++;
 
-      let captureArea;
-      if (container.isFixed) {
-        captureArea = {
-          x: container.x,
-          y: container.y,
-          width: container.width,
-          height: containerHeight,
-          isFixed: true
-        };
-      } else {
-        captureArea = {
-          x: container.x,
-          y: container.y,
-          width: container.width,
-          height: containerHeight
-        };
-      }
-      console.log('[OCREngine] container capture area:', captureArea);
+        const containerHeight = container.scrollHeight || container.height;
+        const captureArea = container.isFixed
+          ? { x: container.x, y: container.y, width: container.width, height: containerHeight, isFixed: true }
+          : { x: container.x, y: container.y, width: container.width, height: containerHeight };
 
-      // 截图当前页
-      const { pieces } = await captureSequence(captureArea, onProgress);
-      console.log(`[OCREngine] page ${pageCount} captured, pieces:`, pieces.length);
+        const { pieces } = await captureSequence(captureArea, onProgress);
+        allPieces.push(...pieces);
 
-      // 将当前页的片段添加到总列表
-      allPieces.push(...pieces);
+        if (state.abortRequested) break;
+        if (!continuousPageMode) break;
 
-      if (state.abortRequested) {
-        console.log('[OCREngine] abort requested, stopping container loop');
-        break;
-      }
-
-      if (!continuousPageMode) {
-        console.log('[OCREngine] continuousPageMode disabled, stopping after first page');
-        break;
-      }
-
-      // 检查是否有下一页
-      console.log('[OCREngine] checking for next page button...');
-      const findResult = await chrome.tabs.sendMessage(targetTabId, { action: 'findNextPage' });
-
-      if (!findResult || !findResult.found) {
-        console.log('[OCREngine] no next page button found, stopping');
-        await chrome.tabs.sendMessage(targetTabId, {
-          action: 'updateStatus',
-          text: `已完成 ${pageCount} 页截图，开始识别...`
-        }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
-        break;
-      }
-
-      console.log('[OCREngine] next page button found:', findResult.text);
-      await chrome.tabs.sendMessage(targetTabId, {
-        action: 'updateStatus',
-        text: `正在翻页到第 ${pageCount + 1} 页...`
-      }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
-
-      // 点击下一页
-      const clickResult = await chrome.tabs.sendMessage(targetTabId, { action: 'clickNextPage' });
-
-      if (!clickResult || !clickResult.ok) {
-        console.log('[OCREngine] failed to click next page, stopping');
-        break;
-      }
-
-      // 等待页面加载
-      console.log('[OCREngine] waiting for page to load...');
-      const flipSettings = await getConfig();
-      await waitForTabReady(targetTabId, 15000);
-      if (flipSettings.pageFlipDelay > 800) {
-        await sleep(flipSettings.pageFlipDelay - 800);
-      }
-
-      // 翻页后重新测量容器位置（新页面布局可能不同）
-      if (container.selector) {
-        console.log('[OCREngine] remeasuring container with selector:', container.selector);
-        const remeasured = await chrome.tabs.sendMessage(targetTabId, {
-          action: 'remeasureContainer',
-          selector: container.selector
-        }).catch(err => {
-          console.warn('[OCREngine] remeasureContainer failed:', err);
-          return null;
-        });
-
-        if (remeasured && remeasured.found) {
-          console.log('[OCREngine] container remeasured:', remeasured);
-          container = { ...container, ...remeasured };
-        } else {
-          console.warn('[OCREngine] remeasureContainer: not found, using previous coords');
+        if (pageCount >= maxPages) {
+          await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `第 ${chapterCount} 章已达单章页数上限 ${maxPages}` }).catch(() => {});
+          break;
         }
-      }
 
-      if (pageCount >= maxPages) {
-        console.warn(`[OCREngine] reached maximum page limit (${maxPages}), stopping`);
-        await chrome.tabs.sendMessage(targetTabId, {
-          action: 'updateStatus',
-          text: `已达到最大页数限制 (${maxPages} 页)，开始识别...`
-        }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
+        const findResult = await chrome.tabs.sendMessage(targetTabId, { action: 'findNextPage' });
+        if (!findResult || !findResult.found) {
+          await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `第 ${chapterCount} 章已完成 ${pageCount} 页截图` }).catch(() => {});
+          break;
+        }
+
+        await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `第 ${chapterCount} 章 翻页到第 ${pageCount + 1} 页...` }).catch(() => {});
+        const clickResult = await chrome.tabs.sendMessage(targetTabId, { action: 'clickNextPage' });
+        if (!clickResult || !clickResult.ok) break;
+
+        const flipSettings = await getConfig();
+        await waitForTabReady(targetTabId, 15000);
+        if (flipSettings.pageFlipDelay > 800) await sleep(flipSettings.pageFlipDelay - 800);
+
+        // 翻页后重新测量容器
+        if (container.selector) {
+          const remeasured = await chrome.tabs.sendMessage(targetTabId, {
+            action: 'remeasureContainer', selector: container.selector
+          }).catch(err => { console.warn('[OCREngine] remeasureContainer failed:', err); return null; });
+          if (remeasured && remeasured.found) container = { ...container, ...remeasured };
+        }
+      } while (continuousPageMode);
+
+      if (state.abortRequested) break;
+      if (!continuousChapterMode) break;
+
+      // 已读完 maxChapters 章，不再跳章
+      if (chapterCount >= maxChapters) {
+        await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `已达章数上限 ${maxChapters}，开始识别...` }).catch(() => {});
         break;
       }
 
-    } while (continuousPageMode);
+      const chapterFind = await chrome.tabs.sendMessage(targetTabId, { action: 'findNextChapter' });
+      if (!chapterFind || !chapterFind.found) {
+        await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `已无下一章，共 ${chapterCount} 章，开始识别...` }).catch(() => {});
+        break;
+      }
 
-    // 所有页面截图完成，开始统一 OCR
-    console.log(`[OCREngine] all ${pageCount} pages captured, total pieces: ${allPieces.length}, starting OCR...`);
+      await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `正在跳转到第 ${chapterCount + 1} 章...` }).catch(() => {});
+      const chapterClick = await chrome.tabs.sendMessage(targetTabId, { action: 'clickNextChapter' });
+      if (!chapterClick || !chapterClick.ok) break;
 
-    await chrome.tabs.sendMessage(targetTabId, {
-      action: 'updateStatus',
-      text: `正在识别 ${pageCount} 页内容...`
-    }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
+      await waitForTabReady(targetTabId, 15000);
+      if (chapterFlipDelay > 800) await sleep(chapterFlipDelay - 800);
+
+      // 跳章后重新测量容器
+      if (container.selector) {
+        const remeasured = await chrome.tabs.sendMessage(targetTabId, {
+          action: 'remeasureContainer', selector: container.selector
+        }).catch(err => { console.warn('[OCREngine] remeasureContainer after chapter flip failed:', err); return null; });
+        if (remeasured && remeasured.found) container = { ...container, ...remeasured };
+      }
+    } while (continuousChapterMode);
+
+    await chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `正在识别 ${chapterCount} 章内容...` }).catch(() => {});
 
     const settings = await getConfig();
     const text = await recognize(allPieces, settings.lang, settings.ocrEngine || 'tesseract', settings, (progress) => {
-      chrome.tabs.sendMessage(targetTabId, {
-        action: 'updateStatus',
-        text: `正在识别: ${progress.status}`
-      }).catch(err => console.warn('[OCREngine] updateStatus failed:', err));
+      chrome.tabs.sendMessage(targetTabId, { action: 'updateStatus', text: `正在识别: ${progress.status}` }).catch(() => {});
     });
 
     const finalText = text || '(未识别到文字)';
@@ -1173,11 +1138,8 @@ async function runContainerOcr(container, onProgress) {
     return finalText;
   } catch (err) {
     console.error('[OCREngine] runContainerOcr error:', err);
-    if (targetTabId) {
-      await showResultInContentScript(null, err.message, 'container', targetTabId);
-    } else {
-      await showResultInContentScript(null, err.message);
-    }
+    if (targetTabId) await showResultInContentScript(null, err.message, 'container', targetTabId);
+    else await showResultInContentScript(null, err.message);
     throw err;
   } finally {
     state.isCapturing = false;
@@ -1208,6 +1170,12 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('[Background] received message:', request.action, 'from tab', sender.tab?.id);
+
+  if (request.action === '__debugLog') {
+    console.log('[ContentDebug]', request.msg);
+    sendResponse({ ok: true });
+    return false;
+  }
 
   if (request.action === 'ocrReady') {
     console.log('[Background] ocrReady message ignored - no longer needed');

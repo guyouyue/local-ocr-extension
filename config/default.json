@@ -8,5 +8,8 @@
   "continuousPageMode": false,
   "maxContinuousPages": 20,
   "pageFlipDelay": 2000,
-  "saveDebugScreenshots": false
+  "saveDebugScreenshots": false,
+  "continuousChapterMode": false,
+  "maxContinuousChapters": 10,
+  "chapterFlipDelay": 3000
 }

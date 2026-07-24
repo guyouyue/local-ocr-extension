@@ -7,6 +7,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const maxContinuousPagesInput = document.getElementById('maxContinuousPages');
   const pageFlipDelayInput = document.getElementById('pageFlipDelay');
   const saveDebugScreenshotsCheckbox = document.getElementById('saveDebugScreenshots');
+  const continuousChapterCheckbox = document.getElementById('continuousChapterMode');
+  const maxContinuousChaptersInput = document.getElementById('maxContinuousChapters');
+  const chapterFlipDelayInput = document.getElementById('chapterFlipDelay');
   const paddleocrSettings = document.getElementById('paddleocrSettings');
   const paddleOcrApiTokenInput = document.getElementById('paddleOcrApiToken');
   const paddleOcrApiModelSelect = document.getElementById('paddleOcrApiModel');
@@ -31,6 +34,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (config.maxContinuousPages != null) maxContinuousPagesInput.value = config.maxContinuousPages;
   if (config.pageFlipDelay != null) pageFlipDelayInput.value = config.pageFlipDelay;
   saveDebugScreenshotsCheckbox.checked = !!config.saveDebugScreenshots;
+  continuousChapterCheckbox.checked = !!config.continuousChapterMode;
+  if (config.maxContinuousChapters != null) maxContinuousChaptersInput.value = config.maxContinuousChapters;
+  if (config.chapterFlipDelay != null) chapterFlipDelayInput.value = config.chapterFlipDelay;
 
   // 根据选择的引擎显示/隐藏对应的配置
   function updateEngineSettings() {
@@ -71,7 +77,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       continuousPageMode: continuousPageCheckbox.checked,
       maxContinuousPages: parseInt(maxContinuousPagesInput.value, 10) || 20,
       pageFlipDelay: parseInt(pageFlipDelayInput.value, 10) || 2000,
-      saveDebugScreenshots: saveDebugScreenshotsCheckbox.checked
+      saveDebugScreenshots: saveDebugScreenshotsCheckbox.checked,
+      continuousChapterMode: continuousChapterCheckbox.checked,
+      maxContinuousChapters: parseInt(maxContinuousChaptersInput.value, 10) || 10,
+      chapterFlipDelay: parseInt(chapterFlipDelayInput.value, 10) || 3000
     };
 
     // 验证：如果选择了 PaddleOCR，必须填写 token

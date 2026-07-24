@@ -25,6 +25,10 @@
     .continuous-box { padding: 14px 16px; background: #fff8e1; border-radius: 6px; margin-bottom: 16px; border-left: 4px solid #f9a825; }
     .continuous-box h3 { margin: 0 0 12px; font-size: 14px; color: #e65100; }
     .continuous-box .desc { margin: 12px 0 0; font-size: 12px; color: #888; line-height: 1.6; }
+
+    .chapter-box { padding: 14px 16px; background: #e8f5e9; border-radius: 6px; margin-bottom: 16px; border-left: 4px solid #388e3c; }
+    .chapter-box h3 { margin: 0 0 12px; font-size: 14px; color: #1b5e20; }
+    .chapter-box .desc { margin: 12px 0 0; font-size: 12px; color: #888; line-height: 1.6; }
   </style>
 </head>
 <body>
@@ -98,9 +102,9 @@
       </label>
 
       <div class="field">
-        <label>最大连页数量</label>
+        <label>单章最大连页数量</label>
         <input id="maxContinuousPages" type="number" class="short" value="20" min="1" max="200" step="1">
-        <small>防止无限翻页</small>
+        <small>每章独立计数，防止单章内无限翻页</small>
       </div>
 
       <div class="field">
@@ -110,6 +114,30 @@
       </div>
 
       <p class="desc">开启后，OCR 完成当前页后会自动查找并点击"下一页"按钮，继续识别下一页内容，直到无法翻页或达到最大页数为止。适用于有分页的内容（如小说章节、文档翻页等）。所有分页内容将合并到同一条历史记录中。</p>
+    </div>
+
+    <!-- 连章模式 -->
+    <div class="chapter-box">
+      <h3>📚 连章模式（自动跳章识别）</h3>
+
+      <label class="check-row">
+        <input id="continuousChapterMode" type="checkbox">
+        <span>启用连章模式</span>
+      </label>
+
+      <div class="field">
+        <label>最大连章数量</label>
+        <input id="maxContinuousChapters" type="number" class="short" value="10" min="1" max="100" step="1">
+        <small>防止无限跳章</small>
+      </div>
+
+      <div class="field">
+        <label>跳章等待时间（毫秒）</label>
+        <input id="chapterFlipDelay" type="number" class="short" value="3000" min="500" max="15000" step="500">
+        <small>点击下一章后等待页面加载的时间</small>
+      </div>
+
+      <p class="desc">开启后，完成当前章（含连页）后会自动查找并点击"下一章"按钮，继续识别下一章内容。顺序为：先完成章内所有分页，再跳到下一章。所有内容合并到同一条历史记录中。</p>
     </div>
 
     <!-- 历史记录管理 -->
